@@ -1,0 +1,33 @@
+{
+  "name": "@helmet/client",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo 'add lint'",
+    "test": "echo 'add tests'"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "tough-cookie": "^4.1.4",
+    "undici": "^6.19.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/tough-cookie": "^4.0.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@helmet/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "helmet": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo 'add lint'",
+    "test": "echo 'add tests'",
+    "start": "node dist/index.js",
+    "prepack": "pnpm --filter @helmet/client build && pnpm --filter @helmet/cli build"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^5.3.8",
+    "@helmet/client": "workspace:^"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

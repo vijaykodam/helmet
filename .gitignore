@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.claude/
+*.env
+PLAN-*.md
+.playwright-mcp/
+.remember/
