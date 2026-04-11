@@ -7,3 +7,5 @@ dist/
 PLAN-*.md
 .playwright-mcp/
 .remember/
+.changeset/README.md
+session-report-*
