@@ -1,6 +1,20 @@
 {
   "name": "@helmet/client",
   "version": "0.1.0",
+  "description": "TypeScript client library for Finland's Helmet library system (helmet.finna.fi)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vijaykodam/helmet.git",
+    "directory": "packages/helmet-client"
+  },
+  "keywords": [
+    "helmet",
+    "finna",
+    "library",
+    "finland",
+    "helsinki"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

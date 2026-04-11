@@ -1,0 +1,9 @@
+{
+  "skills": [
+    {
+      "name": "helmet",
+      "path": "skills/helmet",
+      "description": "Use the Helmet CLI to check loans, renew books, view holds, and manage fines for Finnish Helmet library accounts."
+    }
+  ]
+}

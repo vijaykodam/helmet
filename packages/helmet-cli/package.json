@@ -1,6 +1,21 @@
 {
   "name": "@helmet/cli",
   "version": "0.1.0",
+  "description": "CLI for Finland's Helmet library system — check loans, renew books, view holds and fines",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vijaykodam/helmet.git",
+    "directory": "packages/helmet-cli"
+  },
+  "keywords": [
+    "helmet",
+    "finna",
+    "library",
+    "finland",
+    "helsinki",
+    "cli"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
