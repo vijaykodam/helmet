@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { Loan, RenewalResult } from "../types.js";
+import { extractStrongValues } from "./utils.js";
 
 /**
  * Parse the /MyResearch/CheckedOut page HTML into structured Loan objects.
@@ -94,34 +95,6 @@ export function parseLoans(html: string): Loan[] {
   });
 
   return loans;
-}
-
-/**
- * Extract all <strong>Label: Value</strong> pairs from a container.
- * Finna puts label and value in the same <strong> element:
- *   <strong>Eräpäivä: 11.5.2026</strong>
- *   <strong>Uusittu: 1</strong>
- * Returns a map of lowercase label → value.
- */
-function extractStrongValues(
-  $: cheerio.CheerioAPI,
-  container: ReturnType<cheerio.CheerioAPI>,
-): Record<string, string> {
-  const values: Record<string, string> = {};
-
-  container.find("strong").each((_i, el) => {
-    const text = $(el).text().trim();
-    const colonIdx = text.indexOf(":");
-    if (colonIdx > 0) {
-      const label = text.slice(0, colonIdx).trim().toLowerCase();
-      const value = text.slice(colonIdx + 1).trim();
-      if (label && value) {
-        values[label] = value;
-      }
-    }
-  });
-
-  return values;
 }
 
 /**

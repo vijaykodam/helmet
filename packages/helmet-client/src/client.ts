@@ -2,12 +2,16 @@ import { HelmetSession } from "./session.js";
 import type {
   HelmetProfile,
   Loan,
+  Hold,
+  Fine,
   RenewalResult,
   SearchResponse,
   SearchResult,
   AccountSummary,
 } from "./types.js";
 import { parseLoans, parseRenewalResults, extractRenewalCsrf } from "./parsers/loans.js";
+import { parseHolds } from "./parsers/holds.js";
+import { parseFines } from "./parsers/fines.js";
 
 const FINNA_API = "https://api.finna.fi";
 
@@ -84,6 +88,22 @@ export class HelmetClient {
     },
   };
 
+  holds = {
+    list: async (): Promise<Hold[]> => {
+      const resp = await this.session.get("/MyResearch/Holds");
+      const html = await resp.text();
+      return parseHolds(html);
+    },
+  };
+
+  fines = {
+    list: async (): Promise<{ fines: Fine[]; total: number }> => {
+      const resp = await this.session.get("/MyResearch/Fines");
+      const html = await resp.text();
+      return parseFines(html);
+    },
+  };
+
   search = {
     query: async (
       lookfor: string,
@@ -125,7 +145,12 @@ export class HelmetClient {
 
   summary = {
     get: async (): Promise<AccountSummary> => {
-      const loans = await this.loans.list();
+      const [loans, holdsData, finesData] = await Promise.all([
+        this.loans.list(),
+        this.holds.list(),
+        this.fines.list(),
+      ]);
+
       const now = new Date();
       const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
 
@@ -139,12 +164,12 @@ export class HelmetClient {
 
       return {
         loans,
-        holds: [], // Phase 2
-        fines: [], // Phase 2
-        totalFines: 0,
+        holds: holdsData,
+        fines: finesData.fines,
+        totalFines: finesData.total,
         loansDueSoon,
         loansOverdue,
-        holdsReady: [],
+        holdsReady: holdsData.filter((h) => h.status === "available_for_pickup"),
         fetchedAt: now,
       };
     },

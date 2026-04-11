@@ -2,7 +2,7 @@
 
 import { input, password, select } from "@inquirer/prompts";
 import { HelmetClient, AuthenticationError } from "@helmet/client";
-import type { HelmetProfile, Loan, RenewalResult } from "@helmet/client";
+import type { HelmetProfile, Loan, Hold, Fine, RenewalResult } from "@helmet/client";
 import {
   loadConfig,
   saveConfig,
@@ -40,6 +40,12 @@ async function main(): Promise<void> {
       break;
     case "loans":
       await handleLoans(subcommand);
+      break;
+    case "holds":
+      await handleHolds();
+      break;
+    case "fines":
+      await handleFines();
       break;
     case "search":
       await handleSearch(positional.slice(1).join(" "));
@@ -177,6 +183,55 @@ async function handleLoans(subcommand: string | undefined): Promise<void> {
   }
 }
 
+async function handleHolds(): Promise<void> {
+  const client = await getAuthenticatedClient();
+  const holds = await client.holds.list();
+
+  if (jsonFlag) {
+    outputJson(holds);
+  } else {
+    if (holds.length === 0) {
+      output("No holds.");
+      return;
+    }
+    output(`\n  Holds (${holds.length}):\n`);
+    for (const h of holds) {
+      const statusLabel =
+        h.status === "available_for_pickup" ? " [READY FOR PICKUP]" :
+        h.status === "in_transit" ? " [IN TRANSIT]" :
+        "";
+      output(`  ${h.title}${statusLabel}`);
+      if (h.author) output(`    Author: ${h.author}`);
+      if (h.queuePosition != null) output(`    Queue position: ${h.queuePosition}`);
+      if (h.pickupLocation) output(`    Pickup: ${h.pickupLocation}`);
+      if (h.expirationDate) output(`    Expires: ${h.expirationDate}`);
+      output("");
+    }
+  }
+}
+
+async function handleFines(): Promise<void> {
+  const client = await getAuthenticatedClient();
+  const { fines, total } = await client.fines.list();
+
+  if (jsonFlag) {
+    outputJson({ fines, total });
+  } else {
+    if (fines.length === 0) {
+      output("No fines.");
+      return;
+    }
+    output(`\n  Fines (${fines.length}):\n`);
+    for (const f of fines) {
+      output(`  ${f.title ?? "Unknown item"} — ${f.amount.toFixed(2)} ${f.currency}`);
+      if (f.reason) output(`    Reason: ${f.reason}`);
+      if (f.createDate) output(`    Date: ${f.createDate}`);
+      output("");
+    }
+    output(`  Total: ${total.toFixed(2)} EUR\n`);
+  }
+}
+
 async function handleSearch(query: string): Promise<void> {
   if (!query) {
     console.error("Usage: helmet search <query>");
@@ -239,7 +294,20 @@ async function handleSummary(): Promise<void> {
       }
     }
     output(`  Holds: ${summary.holds.length}`);
-    output(`  Fines: ${summary.totalFines} EUR`);
+    if (summary.holdsReady.length > 0) {
+      output(`  READY FOR PICKUP: ${summary.holdsReady.length} item(s)!`);
+      for (const h of summary.holdsReady) {
+        output(`    - ${h.title}${h.pickupLocation ? ` (at ${h.pickupLocation})` : ""}`);
+      }
+    }
+    if (summary.totalFines > 0) {
+      output(`  Fines: ${summary.totalFines.toFixed(2)} EUR`);
+      for (const f of summary.fines) {
+        output(`    - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+      }
+    } else {
+      output(`  Fines: 0 EUR`);
+    }
     output("");
   }
 }
@@ -254,6 +322,8 @@ async function handleInteractive(): Promise<void> {
       message: "What would you like to do?",
       choices: [
         { name: "View loans", value: "loans" },
+        { name: "View holds", value: "holds" },
+        { name: "View fines", value: "fines" },
         { name: "Renew all", value: "renew-all" },
         { name: "Search catalog", value: "search" },
         { name: "Summary", value: "summary" },
@@ -273,6 +343,33 @@ async function handleInteractive(): Promise<void> {
             output(`  - ${l.title} (due: ${l.dueDate})${status}`);
           }
           output("");
+        }
+        break;
+      }
+      case "holds": {
+        const holds = await client.holds.list();
+        if (holds.length === 0) {
+          output("  No holds.\n");
+        } else {
+          output(`\n  Holds (${holds.length}):\n`);
+          for (const h of holds) {
+            const status = h.status === "available_for_pickup" ? " [READY]" : h.status === "in_transit" ? " [TRANSIT]" : "";
+            output(`  - ${h.title}${status}${h.pickupLocation ? ` (${h.pickupLocation})` : ""}`);
+          }
+          output("");
+        }
+        break;
+      }
+      case "fines": {
+        const { fines, total } = await client.fines.list();
+        if (fines.length === 0) {
+          output("  No fines.\n");
+        } else {
+          output(`\n  Fines (${fines.length}):\n`);
+          for (const f of fines) {
+            output(`  - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+          }
+          output(`  Total: ${total.toFixed(2)} EUR\n`);
         }
         break;
       }
@@ -378,6 +475,8 @@ function printUsage(): void {
     loans list [--json]       List checked-out items
     loans renew <id> [--json] Renew a specific item
     loans renew --all [--json] Renew all renewable items
+    holds [--json]            List current holds
+    fines [--json]            List fines and total
     search <query> [--json]   Search the catalog
     summary [--json]          Account summary
     config path               Show config file path
