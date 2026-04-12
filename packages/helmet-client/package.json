@@ -1,7 +1,8 @@
 {
-  "name": "@helmet/client",
+  "name": "@helmet-ai/client",
   "version": "0.1.0",
   "description": "TypeScript client library for Finland's Helmet library system (helmet.finna.fi)",
+  "author": "Vijay Kodam",
   "license": "MIT",
   "repository": {
     "type": "git",

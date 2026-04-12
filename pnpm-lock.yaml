@@ -20,7 +20,7 @@ importers:
 
   packages/helmet-cli:
     dependencies:
-      '@helmet/client':
+      '@helmet-ai/client':
         specifier: workspace:^
         version: link:../helmet-client
       '@inquirer/prompts':

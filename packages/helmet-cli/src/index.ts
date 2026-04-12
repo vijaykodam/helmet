@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { input, password, select } from "@inquirer/prompts";
-import { HelmetClient, AuthenticationError } from "@helmet/client";
-import type { HelmetProfile, Loan, Hold, Fine, RenewalResult } from "@helmet/client";
+import { HelmetClient, AuthenticationError } from "@helmet-ai/client";
+import type { HelmetProfile, Loan, Hold, Fine, RenewalResult } from "@helmet-ai/client";
 import {
   loadConfig,
   saveConfig,

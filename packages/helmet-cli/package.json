@@ -1,7 +1,8 @@
 {
-  "name": "@helmet/cli",
+  "name": "@helmet-ai/helmet",
   "version": "0.1.0",
   "description": "CLI for Finland's Helmet library system — check loans, renew books, view holds and fines",
+  "author": "Vijay Kodam",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -27,11 +28,11 @@
     "lint": "echo 'add lint'",
     "test": "echo 'add tests'",
     "start": "node dist/index.js",
-    "prepack": "pnpm --filter @helmet/client build && pnpm --filter @helmet/cli build"
+    "prepack": "pnpm --filter @helmet-ai/client build && pnpm --filter @helmet-ai/helmet build"
   },
   "dependencies": {
     "@inquirer/prompts": "^5.3.8",
-    "@helmet/client": "workspace:^"
+    "@helmet-ai/client": "workspace:^"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
