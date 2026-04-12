@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { input, password, select } from "@inquirer/prompts";
+import { input, password, select, confirm } from "@inquirer/prompts";
 import { HelmetClient } from "./client.js";
 import { AuthenticationError } from "./session.js";
-import type { HelmetProfile, Loan, Hold, Fine, RenewalResult } from "./types.js";
+import type { HelmetProfile, RenewalResult } from "./types.js";
 import {
   loadConfig,
   saveConfig,
@@ -11,6 +11,9 @@ import {
   revealSecret,
   profileId,
   getConfigPath,
+  maskCardNumber,
+  profileLabel,
+  resolveProfile,
   type StoredProfile,
   type CliConfig,
 } from "./config.js";
@@ -19,24 +22,68 @@ const BASE_URL = "https://helmet.finna.fi";
 
 // ─── Argument parsing ───────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const jsonFlag = args.includes("--json");
-const allFlag = args.includes("--all");
-const debugFlag = args.includes("--debug");
+const rawArgs = process.argv.slice(2);
 
-function getPositionalArgs(): string[] {
-  return args.filter((a) => !a.startsWith("--"));
+interface ParsedArgs {
+  positional: string[];
+  json: boolean;
+  all: boolean;
+  debug: boolean;
+  profile: string | null;
+  allProfiles: boolean;
+}
+
+function parseArgs(args: string[]): ParsedArgs {
+  const positional: string[] = [];
+  let json = false;
+  let all = false;
+  let debug = false;
+  let profile: string | null = null;
+  let allProfiles = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--json") json = true;
+    else if (a === "--all") all = true;
+    else if (a === "--debug") debug = true;
+    else if (a === "--all-profiles") allProfiles = true;
+    else if (a === "--profile") {
+      const next = args[i + 1];
+      if (!next || next.startsWith("--")) {
+        console.error("Error: --profile requires a value (id, card number, or display name).");
+        process.exit(1);
+      }
+      profile = next;
+      i++;
+    } else if (a.startsWith("--profile=")) {
+      profile = a.slice("--profile=".length);
+    } else if (a.startsWith("--")) {
+      // Unknown flag — leave silent for forward-compat; treat as passthrough ignored.
+    } else {
+      positional.push(a);
+    }
+  }
+
+  return { positional, json, all, debug, profile, allProfiles };
+}
+
+const parsed = parseArgs(rawArgs);
+const { positional, json: jsonFlag, all: allFlag, debug: debugFlag } = parsed;
+
+if (parsed.profile && parsed.allProfiles) {
+  console.error("Error: --profile and --all-profiles are mutually exclusive.");
+  process.exit(1);
 }
 
 // ─── Main entry ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const positional = getPositionalArgs();
   const command = positional[0];
   const subcommand = positional[1];
 
   switch (command) {
     case "login":
+      rejectAllProfiles("login");
       await handleLogin();
       break;
     case "loans":
@@ -49,10 +96,19 @@ async function main(): Promise<void> {
       await handleFines();
       break;
     case "search":
+      rejectAllProfiles("search");
+      if (parsed.profile) {
+        console.error("Error: search is unauthenticated; --profile has no effect. Remove it.");
+        process.exit(1);
+      }
       await handleSearch(positional.slice(1).join(" "));
       break;
     case "summary":
       await handleSummary();
+      break;
+    case "profiles":
+      rejectAllProfiles("profiles");
+      await handleProfiles(subcommand, positional.slice(2));
       break;
     case "config":
       if (subcommand === "path") {
@@ -71,11 +127,27 @@ async function main(): Promise<void> {
   }
 }
 
+function rejectAllProfiles(command: string): void {
+  if (parsed.allProfiles) {
+    console.error(`Error: --all-profiles is not supported for "${command}".`);
+    process.exit(1);
+  }
+}
+
 // ─── Commands ───────────────────────────────────────────────────
 
 async function handleLogin(): Promise<void> {
   const cardNumber = await input({ message: "Library card number:" });
   const pin = await password({ message: "PIN:" });
+
+  const config = await loadConfig();
+  const id = profileId(cardNumber);
+  const existing = config.profiles.find((p) => p.id === id);
+
+  const displayName = await input({
+    message: "Display name (optional, e.g. Alice):",
+    default: existing?.displayName ?? undefined,
+  });
 
   output("Logging in...");
   try {
@@ -86,29 +158,25 @@ async function handleLogin(): Promise<void> {
       debug: debugFlag,
     });
 
-    // Save profile
-    const config = await loadConfig();
-    const id = profileId(cardNumber);
-    const existing = config.profiles.findIndex((p) => p.id === id);
     const profile: StoredProfile = {
       id,
       cardNumber,
       pinObfuscated: obfuscateSecret(pin),
-      displayName: null,
+      displayName: displayName.trim() === "" ? null : displayName.trim(),
       lastUsedAt: new Date().toISOString(),
     };
 
-    if (existing >= 0) {
-      config.profiles[existing] = profile;
+    const existingIndex = config.profiles.findIndex((p) => p.id === id);
+    if (existingIndex >= 0) {
+      config.profiles[existingIndex] = profile;
     } else {
       config.profiles.push(profile);
     }
     config.lastProfileId = id;
     await saveConfig(config);
 
-    output("Login successful! Profile saved.");
+    output(`Login successful! Profile saved as ${profileLabel(profile)}.`);
 
-    // Show a quick summary
     const loans = await client.loans.list();
     output(`You have ${loans.length} item(s) checked out.`);
   } catch (err) {
@@ -121,45 +189,55 @@ async function handleLogin(): Promise<void> {
 }
 
 async function handleLoans(subcommand: string | undefined): Promise<void> {
-  const client = await getAuthenticatedClient();
-
   switch (subcommand) {
     case "list":
     case undefined: {
-      const loans = await client.loans.list();
-      if (jsonFlag) {
-        outputJson(loans);
-      } else {
-        if (loans.length === 0) {
-          output("No items checked out.");
-          return;
-        }
-        output(`\n  Checked out items (${loans.length}):\n`);
-        for (const loan of loans) {
-          const status = loan.dueStatus === "overdue" ? " [OVERDUE]" : loan.dueStatus === "due" ? " [DUE SOON]" : "";
-          const renew = loan.renewable ? " (renewable)" : "";
-          output(`  ${loan.title}`);
-          output(`    Due: ${loan.dueDate}${status}${renew}`);
-          if (loan.author) output(`    Author: ${loan.author}`);
-          if (loan.id) output(`    ID: ${loan.id}`);
-          output("");
-        }
-      }
+      await runSelectedOrFanOut(async (client) => client.loans.list(), {
+        jsonOnAggregate: true,
+        renderSingle: (loans) => {
+          if (loans.length === 0) {
+            output("No items checked out.");
+            return;
+          }
+          output(`\n  Checked out items (${loans.length}):\n`);
+          for (const loan of loans) {
+            const status =
+              loan.dueStatus === "overdue"
+                ? " [OVERDUE]"
+                : loan.dueStatus === "due"
+                  ? " [DUE SOON]"
+                  : "";
+            const renew = loan.renewable ? " (renewable)" : "";
+            output(`  ${loan.title}`);
+            output(`    Due: ${loan.dueDate}${status}${renew}`);
+            if (loan.author) output(`    Author: ${loan.author}`);
+            if (loan.id) output(`    ID: ${loan.id}`);
+            output("");
+          }
+        },
+      });
       break;
     }
     case "renew": {
-      const targetId = getPositionalArgs()[2];
+      if (parsed.allProfiles) {
+        console.error(
+          "Error: loans renew is per-profile; pass --profile <selector> instead of --all-profiles.",
+        );
+        process.exit(1);
+      }
+      const targetId = positional[2];
       if (!targetId && !allFlag) {
         console.error("Usage: helmet loans renew <id> or helmet loans renew --all");
         process.exit(1);
       }
+      const client = await getAuthenticatedClient();
       let results: RenewalResult[];
       if (allFlag) {
         output("Renewing all items...");
         results = await client.loans.renewAll();
       } else {
         output(`Renewing item ${targetId}...`);
-        results = await client.loans.renew(targetId);
+        results = await client.loans.renew(targetId!);
       }
       if (jsonFlag) {
         outputJson(results);
@@ -198,9 +276,11 @@ async function handleHolds(): Promise<void> {
     output(`\n  Holds (${holds.length}):\n`);
     for (const h of holds) {
       const statusLabel =
-        h.status === "available_for_pickup" ? " [READY FOR PICKUP]" :
-        h.status === "in_transit" ? " [IN TRANSIT]" :
-        "";
+        h.status === "available_for_pickup"
+          ? " [READY FOR PICKUP]"
+          : h.status === "in_transit"
+            ? " [IN TRANSIT]"
+            : "";
       output(`  ${h.title}${statusLabel}`);
       if (h.author) output(`    Author: ${h.author}`);
       if (h.queuePosition != null) output(`    Queue position: ${h.queuePosition}`);
@@ -239,15 +319,6 @@ async function handleSearch(query: string): Promise<void> {
     process.exit(1);
   }
 
-  // Search doesn't require authentication
-  const client = await HelmetClient.login({
-    baseUrl: BASE_URL,
-    cardNumber: "anonymous",
-    pin: "",
-    debug: debugFlag,
-  }).catch(() => null);
-
-  // Use the public API directly for search (no auth needed)
   const params = new URLSearchParams({
     lookfor: query,
     "filter[]": "building:0/Helmet/",
@@ -274,49 +345,183 @@ async function handleSearch(query: string): Promise<void> {
 }
 
 async function handleSummary(): Promise<void> {
-  const client = await getAuthenticatedClient();
-  const summary = await client.summary.get();
+  await runSelectedOrFanOut(async (client) => client.summary.get(), {
+    jsonOnAggregate: true,
+    renderSingle: (summary) => {
+      output("\n  === Helmet Library Summary ===\n");
+      output(`  Total loans: ${summary.loans.length}`);
+      if (summary.loansOverdue.length > 0) {
+        output(`  OVERDUE: ${summary.loansOverdue.length} item(s)!`);
+        for (const l of summary.loansOverdue) {
+          output(`    - ${l.title} (due: ${l.dueDate})`);
+        }
+      }
+      if (summary.loansDueSoon.length > 0) {
+        output(`  Due soon: ${summary.loansDueSoon.length} item(s)`);
+        for (const l of summary.loansDueSoon) {
+          output(`    - ${l.title} (due: ${l.dueDate})`);
+        }
+      }
+      output(`  Holds: ${summary.holds.length}`);
+      if (summary.holdsReady.length > 0) {
+        output(`  READY FOR PICKUP: ${summary.holdsReady.length} item(s)!`);
+        for (const h of summary.holdsReady) {
+          output(`    - ${h.title}${h.pickupLocation ? ` (at ${h.pickupLocation})` : ""}`);
+        }
+      }
+      if (summary.totalFines > 0) {
+        output(`  Fines: ${summary.totalFines.toFixed(2)} EUR`);
+        for (const f of summary.fines) {
+          output(`    - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+        }
+      } else {
+        output(`  Fines: 0 EUR`);
+      }
+      output("");
+    },
+  });
+}
 
-  if (jsonFlag) {
-    outputJson(summary);
-  } else {
-    output("\n  === Helmet Library Summary ===\n");
-    output(`  Total loans: ${summary.loans.length}`);
-    if (summary.loansOverdue.length > 0) {
-      output(`  OVERDUE: ${summary.loansOverdue.length} item(s)!`);
-      for (const l of summary.loansOverdue) {
-        output(`    - ${l.title} (due: ${l.dueDate})`);
+async function handleProfiles(
+  subcommand: string | undefined,
+  rest: string[],
+): Promise<void> {
+  const config = await loadConfig();
+
+  switch (subcommand) {
+    case "list":
+    case undefined: {
+      if (jsonFlag) {
+        outputJson(
+          config.profiles.map((p) => ({
+            id: p.id,
+            cardNumber: p.cardNumber,
+            displayName: p.displayName ?? null,
+            lastUsedAt: p.lastUsedAt,
+          })),
+        );
+        return;
       }
-    }
-    if (summary.loansDueSoon.length > 0) {
-      output(`  Due soon: ${summary.loansDueSoon.length} item(s)`);
-      for (const l of summary.loansDueSoon) {
-        output(`    - ${l.title} (due: ${l.dueDate})`);
+      if (config.profiles.length === 0) {
+        output("No profiles. Run: helmet login");
+        return;
       }
-    }
-    output(`  Holds: ${summary.holds.length}`);
-    if (summary.holdsReady.length > 0) {
-      output(`  READY FOR PICKUP: ${summary.holdsReady.length} item(s)!`);
-      for (const h of summary.holdsReady) {
-        output(`    - ${h.title}${h.pickupLocation ? ` (at ${h.pickupLocation})` : ""}`);
+      output(`\n  Profiles (${config.profiles.length}):\n`);
+      for (const p of config.profiles) {
+        const marker = p.id === config.lastProfileId ? " *" : "";
+        output(`  ${p.displayName ?? "(unnamed)"}${marker}`);
+        output(`    card: ${maskCardNumber(p.cardNumber)}`);
+        output(`    last used: ${p.lastUsedAt}`);
+        output("");
       }
+      break;
     }
-    if (summary.totalFines > 0) {
-      output(`  Fines: ${summary.totalFines.toFixed(2)} EUR`);
-      for (const f of summary.fines) {
-        output(`    - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+    case "remove": {
+      const selector = rest[0];
+      if (!selector) {
+        console.error("Usage: helmet profiles remove <selector>");
+        process.exit(1);
       }
-    } else {
-      output(`  Fines: 0 EUR`);
+      const result = resolveProfile(config, selector);
+      if (!result.ok) {
+        printResolveError(result);
+        process.exit(1);
+      }
+      const target = result.profile;
+      if (!jsonFlag) {
+        const ok = await confirm({
+          message: `Remove profile ${profileLabel(target)} (${maskCardNumber(target.cardNumber)})?`,
+          default: false,
+        });
+        if (!ok) {
+          output("Cancelled.");
+          return;
+        }
+      }
+      config.profiles = config.profiles.filter((p) => p.id !== target.id);
+      if (config.lastProfileId === target.id) {
+        config.lastProfileId = config.profiles[0]?.id ?? null;
+      }
+      await saveConfig(config);
+      if (jsonFlag) {
+        outputJson({ ok: true, removed: target.id });
+      } else {
+        output(`Removed ${profileLabel(target)}.`);
+      }
+      break;
     }
-    output("");
+    case "rename": {
+      const selector = rest[0];
+      const newName = rest.slice(1).join(" ").trim();
+      if (!selector || !newName) {
+        console.error("Usage: helmet profiles rename <selector> <new display name>");
+        process.exit(1);
+      }
+      const result = resolveProfile(config, selector);
+      if (!result.ok) {
+        printResolveError(result);
+        process.exit(1);
+      }
+      result.profile.displayName = newName;
+      await saveConfig(config);
+      if (jsonFlag) {
+        outputJson({ ok: true, id: result.profile.id, displayName: newName });
+      } else {
+        output(`Renamed ${result.profile.id} → ${newName}.`);
+      }
+      break;
+    }
+    default:
+      console.error(`Unknown profiles subcommand: ${subcommand}`);
+      process.exit(1);
   }
 }
 
 async function handleInteractive(): Promise<void> {
   output("\n  Helmet Library CLI\n");
 
-  const client = await getAuthenticatedClient();
+  const config = await loadConfig();
+  let clients: { profile: StoredProfile; client: HelmetClient }[] = [];
+  let fanOut = false;
+
+  if (config.profiles.length === 0) {
+    output("No saved profiles. Please log in first.\n");
+    await handleLogin();
+    const refreshed = await loadConfig();
+    const first = refreshed.profiles[0];
+    if (!first) return;
+    clients = [{ profile: first, client: await loginAs(first) }];
+  } else if (config.profiles.length === 1) {
+    const p = config.profiles[0]!;
+    clients = [{ profile: p, client: await loginAs(p) }];
+  } else {
+    const choices = [
+      ...config.profiles.map((p) => ({
+        name: `${p.displayName ?? "(unnamed)"} — ${maskCardNumber(p.cardNumber)}`,
+        value: p.id,
+      })),
+      { name: "All profiles (fan-out)", value: "__all__" },
+    ];
+    const pick = await select({ message: "Choose profile:", choices });
+    if (pick === "__all__") {
+      fanOut = true;
+      for (const p of config.profiles) {
+        try {
+          clients.push({ profile: p, client: await loginAs(p) });
+        } catch (err) {
+          console.error(`  [${profileLabel(p)}] login failed: ${errorMessage(err)}`);
+        }
+      }
+    } else {
+      const p = config.profiles.find((x) => x.id === pick)!;
+      clients = [{ profile: p, client: await loginAs(p) }];
+    }
+  }
+
+  if (clients.length === 0) {
+    console.error("No authenticated profiles available.");
+    process.exit(1);
+  }
 
   while (true) {
     const action = await select({
@@ -332,132 +537,287 @@ async function handleInteractive(): Promise<void> {
       ],
     });
 
-    switch (action) {
-      case "loans": {
-        const loans = await client.loans.list();
-        if (loans.length === 0) {
-          output("  No items checked out.\n");
-        } else {
-          output(`\n  Checked out (${loans.length}):\n`);
-          for (const l of loans) {
-            const status = l.dueStatus === "overdue" ? " [OVERDUE]" : "";
-            output(`  - ${l.title} (due: ${l.dueDate})${status}`);
+    if (action === "exit") return;
+    if (action === "search") {
+      const query = await input({ message: "Search for:" });
+      if (query) await handleSearch(query);
+      continue;
+    }
+
+    for (const { profile, client } of clients) {
+      if (fanOut) output(`\n  === ${profileLabel(profile)} ===`);
+      switch (action) {
+        case "loans": {
+          const loans = await client.loans.list();
+          if (loans.length === 0) {
+            output("  No items checked out.\n");
+          } else {
+            output(`\n  Checked out (${loans.length}):\n`);
+            for (const l of loans) {
+              const status = l.dueStatus === "overdue" ? " [OVERDUE]" : "";
+              output(`  - ${l.title} (due: ${l.dueDate})${status}`);
+            }
+            output("");
+          }
+          break;
+        }
+        case "holds": {
+          const holds = await client.holds.list();
+          if (holds.length === 0) {
+            output("  No holds.\n");
+          } else {
+            output(`\n  Holds (${holds.length}):\n`);
+            for (const h of holds) {
+              const status =
+                h.status === "available_for_pickup"
+                  ? " [READY]"
+                  : h.status === "in_transit"
+                    ? " [TRANSIT]"
+                    : "";
+              output(
+                `  - ${h.title}${status}${h.pickupLocation ? ` (${h.pickupLocation})` : ""}`,
+              );
+            }
+            output("");
+          }
+          break;
+        }
+        case "fines": {
+          const { fines, total } = await client.fines.list();
+          if (fines.length === 0) {
+            output("  No fines.\n");
+          } else {
+            output(`\n  Fines (${fines.length}):\n`);
+            for (const f of fines) {
+              output(`  - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+            }
+            output(`  Total: ${total.toFixed(2)} EUR\n`);
+          }
+          break;
+        }
+        case "renew-all": {
+          output("  Renewing all items...");
+          const results = await client.loans.renewAll();
+          for (const r of results) {
+            const detail = r.errorCode ? ` (${r.errorCode})` : "";
+            const dueInfo = r.newDueDate ? ` → ${r.newDueDate}` : "";
+            output(`  [${r.success ? "OK" : "FAIL"}] ${r.message ?? r.id}${detail}${dueInfo}`);
           }
           output("");
+          break;
         }
-        break;
-      }
-      case "holds": {
-        const holds = await client.holds.list();
-        if (holds.length === 0) {
-          output("  No holds.\n");
-        } else {
-          output(`\n  Holds (${holds.length}):\n`);
-          for (const h of holds) {
-            const status = h.status === "available_for_pickup" ? " [READY]" : h.status === "in_transit" ? " [TRANSIT]" : "";
-            output(`  - ${h.title}${status}${h.pickupLocation ? ` (${h.pickupLocation})` : ""}`);
+        case "summary": {
+          const summary = await client.summary.get();
+          output(`  Total loans: ${summary.loans.length}`);
+          if (summary.loansOverdue.length > 0) {
+            output(`  OVERDUE: ${summary.loansOverdue.length} item(s)`);
           }
-          output("");
-        }
-        break;
-      }
-      case "fines": {
-        const { fines, total } = await client.fines.list();
-        if (fines.length === 0) {
-          output("  No fines.\n");
-        } else {
-          output(`\n  Fines (${fines.length}):\n`);
-          for (const f of fines) {
-            output(`  - ${f.title ?? "Unknown"}: ${f.amount.toFixed(2)} EUR`);
+          if (summary.holdsReady.length > 0) {
+            output(`  Ready for pickup: ${summary.holdsReady.length}`);
           }
-          output(`  Total: ${total.toFixed(2)} EUR\n`);
+          output(`  Fines: ${summary.totalFines.toFixed(2)} EUR\n`);
+          break;
         }
-        break;
       }
-      case "renew-all": {
-        output("  Renewing all items...");
-        const results = await client.loans.renewAll();
-        for (const r of results) {
-          const detail = r.errorCode ? ` (${r.errorCode})` : "";
-          const dueInfo = r.newDueDate ? ` → ${r.newDueDate}` : "";
-          output(`  [${r.success ? "OK" : "FAIL"}] ${r.message ?? r.id}${detail}${dueInfo}`);
-        }
-        output("");
-        break;
-      }
-      case "search": {
-        const query = await input({ message: "Search for:" });
-        if (query) {
-          await handleSearch(query);
-        }
-        break;
-      }
-      case "summary":
-        await handleSummary();
-        break;
-      case "exit":
-        return;
     }
   }
 }
 
-// ─── Helpers ────────────────────────────────────────────────────
+// ─── Multi-profile plumbing ─────────────────────────────────────
 
-async function getAuthenticatedClient(): Promise<HelmetClient> {
-  const config = await loadConfig();
-
-  let profile: StoredProfile | undefined;
-
-  if (config.profiles.length === 0) {
-    // No saved profiles — prompt for login
-    output("No saved profiles. Please log in first.\n");
-    await handleLogin();
-    const refreshedConfig = await loadConfig();
-    profile = refreshedConfig.profiles[0];
-  } else if (config.profiles.length === 1) {
-    profile = config.profiles[0];
-  } else {
-    // Multiple profiles — let user choose or use last
-    const lastId = config.lastProfileId;
-    profile = config.profiles.find((p) => p.id === lastId) ?? config.profiles[0];
-  }
-
-  if (!profile) {
-    console.error("No profile available. Run: helmet login");
-    process.exit(1);
-  }
-
+async function loginAs(profile: StoredProfile): Promise<HelmetClient> {
   const pin = revealSecret(profile.pinObfuscated);
   if (!pin) {
-    console.error("Could not decrypt PIN. Please re-login: helmet login");
-    process.exit(1);
+    throw new Error(
+      `Could not decrypt PIN for ${profileLabel(profile)}. Re-login: helmet login`,
+    );
   }
-
   const helmetProfile: HelmetProfile = {
     baseUrl: BASE_URL,
     cardNumber: profile.cardNumber,
     pin,
     debug: debugFlag,
   };
+  return HelmetClient.login(helmetProfile);
+}
 
+async function resolveProfileOrExit(
+  config: CliConfig,
+  selector: string | null,
+): Promise<StoredProfile> {
+  if (selector) {
+    const result = resolveProfile(config, selector);
+    if (!result.ok) {
+      printResolveError(result);
+      process.exit(1);
+    }
+    return result.profile;
+  }
+
+  if (config.profiles.length === 0) {
+    console.error("No profile available. Run: helmet login");
+    process.exit(1);
+  }
+  if (config.profiles.length === 1) {
+    return config.profiles[0]!;
+  }
+  const lastId = config.lastProfileId;
+  return config.profiles.find((p) => p.id === lastId) ?? config.profiles[0]!;
+}
+
+function printResolveError(
+  result: { ok: false; error: string; candidates?: StoredProfile[] },
+): void {
+  console.error(`Error: ${result.error}`);
+  if (result.candidates && result.candidates.length > 0) {
+    console.error("Candidates:");
+    for (const c of result.candidates) {
+      console.error(
+        `  ${c.displayName ?? "(unnamed)"} — ${maskCardNumber(c.cardNumber)} — ${c.id}`,
+      );
+    }
+  }
+}
+
+async function getAuthenticatedClient(): Promise<HelmetClient> {
+  const config = await loadConfig();
+
+  if (config.profiles.length === 0) {
+    output("No saved profiles. Please log in first.\n");
+    await handleLogin();
+    const refreshed = await loadConfig();
+    const p = refreshed.profiles[0];
+    if (!p) {
+      console.error("No profile available after login.");
+      process.exit(1);
+    }
+    return loginAsOrExit(p, refreshed);
+  }
+
+  const profile = await resolveProfileOrExit(config, parsed.profile);
+  return loginAsOrExit(profile, config);
+}
+
+async function loginAsOrExit(
+  profile: StoredProfile,
+  config: CliConfig,
+): Promise<HelmetClient> {
   try {
-    const client = await HelmetClient.login(helmetProfile);
-
-    // Update last used
+    const client = await loginAs(profile);
     profile.lastUsedAt = new Date().toISOString();
     config.lastProfileId = profile.id;
     await saveConfig(config);
-
     return client;
   } catch (err) {
     if (err instanceof AuthenticationError) {
-      console.error(`Authentication failed: ${err.message}`);
+      console.error(`Authentication failed for ${profileLabel(profile)}: ${err.message}`);
       console.error("Try logging in again: helmet login");
       process.exit(1);
     }
     throw err;
   }
 }
+
+interface FanOutRow<T> {
+  profile: { id: string; displayName: string | null; cardNumber: string };
+  ok: boolean;
+  data?: T;
+  error?: string;
+}
+
+async function runSelectedOrFanOut<T>(
+  run: (client: HelmetClient) => Promise<T>,
+  opts: {
+    jsonOnAggregate: boolean;
+    renderSingle: (data: T) => void;
+  },
+): Promise<void> {
+  if (!parsed.allProfiles) {
+    const client = await getAuthenticatedClient();
+    const data = await run(client);
+    if (jsonFlag) {
+      outputJson(data);
+    } else {
+      opts.renderSingle(data);
+    }
+    return;
+  }
+
+  const config = await loadConfig();
+  if (config.profiles.length === 0) {
+    console.error("No profiles saved. Run: helmet login");
+    process.exit(1);
+  }
+
+  const rows: FanOutRow<T>[] = [];
+  let anyOk = false;
+
+  for (const profile of config.profiles) {
+    try {
+      const client = await loginAs(profile);
+      const data = await run(client);
+      profile.lastUsedAt = new Date().toISOString();
+      anyOk = true;
+      rows.push({
+        profile: {
+          id: profile.id,
+          displayName: profile.displayName ?? null,
+          cardNumber: profile.cardNumber,
+        },
+        ok: true,
+        data,
+      });
+    } catch (err) {
+      const msg = errorMessage(err);
+      rows.push({
+        profile: {
+          id: profile.id,
+          displayName: profile.displayName ?? null,
+          cardNumber: profile.cardNumber,
+        },
+        ok: false,
+        error: msg,
+      });
+      if (!jsonFlag) {
+        console.error(`[${profileLabel(profile)}] ${msg}`);
+      }
+    }
+  }
+
+  await saveConfig(config);
+
+  if (jsonFlag) {
+    // Redact raw cardNumber from JSON fan-out (use masked form).
+    const redacted = rows.map((r) => ({
+      profile: {
+        id: r.profile.id,
+        displayName: r.profile.displayName,
+      },
+      ok: r.ok,
+      ...(r.ok ? { data: r.data } : { error: r.error }),
+    }));
+    outputJson(redacted);
+  } else {
+    for (const r of rows) {
+      const label = r.profile.displayName ?? maskCardNumber(r.profile.cardNumber);
+      output(`\n=== ${label} ===`);
+      if (r.ok && r.data !== undefined) {
+        opts.renderSingle(r.data);
+      } else {
+        output(`  (skipped: ${r.error})`);
+      }
+    }
+  }
+
+  if (!anyOk) process.exit(1);
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  return String(err);
+}
+
+// ─── Output helpers ─────────────────────────────────────────────
 
 function output(text: string): void {
   console.log(text);
@@ -472,19 +832,26 @@ function printUsage(): void {
   Usage: helmet <command> [options]
 
   Commands:
-    login                     Log in and save credentials
-    loans list [--json]       List checked-out items
-    loans renew <id> [--json] Renew a specific item
-    loans renew --all [--json] Renew all renewable items
-    holds [--json]            List current holds
-    fines [--json]            List fines and total
-    search <query> [--json]   Search the catalog
-    summary [--json]          Account summary
-    config path               Show config file path
+    login                        Log in and save credentials
+    loans list [--json]          List checked-out items
+    loans renew <id> [--json]    Renew a specific item
+    loans renew --all [--json]   Renew all renewable items
+    holds [--json]               List current holds
+    fines [--json]               List fines and total
+    search <query> [--json]      Search the catalog (unauthenticated)
+    summary [--json]             Account summary
+    profiles list [--json]       List saved profiles
+    profiles remove <selector>   Remove a saved profile
+    profiles rename <selector> <name>  Rename a profile's display name
+    config path                  Show config file path
 
-  Options:
+  Profile options:
+    --profile <selector>  Target one profile (id, card, or display name)
+    --all-profiles        Fan out across all saved profiles (summary, loans list)
+
+  Other options:
     --json    Output as JSON (for agents)
-    --all     Apply to all items
+    --all     Apply to all items (loans renew)
     --debug   Show debug HTTP logs
 `);
 }

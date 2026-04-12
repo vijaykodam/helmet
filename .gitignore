@@ -1,6 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+*.tgz
+local/
 .DS_Store
 .claude/
 *.env
