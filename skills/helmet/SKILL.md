@@ -1,7 +1,7 @@
 ---
 name: helmet
 version: 0.1.0
-description: Access Finland's Helmet library system from AI agents. Check loans, renew books, place/cancel holds, and view fines for one or many family accounts via the helmet CLI. Session cookies are cached between invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` to cover the whole family.
+description: Access the Helmet public-library network (Helsinki Metropolitan Area — Helsinki, Espoo, Vantaa, Kauniainen — on helmet.finna.fi, built on Finna/VuFind) from AI agents. Check loans and due dates, renew books, place or cancel holds (reservations), view fines, and search the catalog — for one library card or many family accounts in a single call. Uses the patron's card number + PIN; session cookies are cached between CLI invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` for a whole family.
 metadata:
   openclaw:
     requires:
@@ -26,6 +26,16 @@ metadata:
 # Helmet Library Skill
 
 Access the **Helmet library system** (Helsinki Metropolitan Area libraries) from an AI agent. Query loans, renew books, check holds and fines — for one account or many family accounts at once, via the `helmet` CLI with `--json` output.
+
+## What you can ask your agent
+
+- "Is anything overdue for me or the kids at the library?"
+- "Renew everything that's due this week."
+- "How many holds do I have, and which are ready for pickup?"
+- "Place a hold on *Crying in H Mart* for pickup at Sello."
+- "Cancel my hold on the Finnish language audiobook."
+- "Do I owe any fines right now?"
+- "Search the Helmet catalog for 'Tove Jansson'."
 
 ## Quick Start
 
