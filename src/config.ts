@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
+import type { SessionState } from "./session.js";
 
 export interface StoredProfile {
   id: string;
@@ -63,6 +64,49 @@ export function revealSecret(value: string): string | null {
     return decoded.slice(SALT.length);
   } catch {
     return null;
+  }
+}
+
+// ─── Session cache ─────────────────────────────────────────────
+// Persists authenticated cookie jars so a fresh CLI run can skip the full
+// Finna login handshake. The cache file holds cookies + the PIN, which is
+// no more sensitive than config.json (already stores the obfuscated PIN).
+// Mode 0600, directory 0700, same posture as saveConfig.
+
+export function getSessionCachePath(id: string): string {
+  return resolve(dirname(getConfigPath()), "sessions", `${id}.json`);
+}
+
+export async function loadSessionCache(id: string): Promise<SessionState | null> {
+  try {
+    const raw = await readFile(getSessionCachePath(id), "utf-8");
+    const data = JSON.parse(raw) as SessionState;
+    if (data.version !== 1 || !data.cookies || !data.cardNumber || !data.pin) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSessionCache(
+  id: string,
+  state: SessionState,
+): Promise<void> {
+  const path = getSessionCachePath(id);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, JSON.stringify(state) + "\n", {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+}
+
+export async function clearSessionCache(id: string): Promise<void> {
+  try {
+    await unlink(getSessionCachePath(id));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
   }
 }
 

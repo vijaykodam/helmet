@@ -1,6 +1,14 @@
 import { CookieJar, type Cookie } from "tough-cookie";
 import { fetch, type RequestInit, type Response } from "undici";
 
+export interface SessionState {
+  version: 1;
+  cookies: CookieJar.Serialized;
+  cardNumber: string;
+  pin: string;
+  savedAt: string;
+}
+
 export class AuthenticationError extends Error {}
 export class APIError extends Error {
   status: number;
@@ -26,6 +34,41 @@ export class HelmetSession {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.cookieJar = new CookieJar();
     this.debug = Boolean(opts?.debug);
+  }
+
+  /**
+   * Serialize the authenticated session so it can be restored later.
+   * Includes credentials so the auto-re-auth branch in request() keeps
+   * working if the cookies turn out to be stale.
+   */
+  exportState(): SessionState {
+    if (!this.loggedIn || !this.cardNumber || !this.pin) {
+      throw new Error("HelmetSession not logged in — cannot export state");
+    }
+    return {
+      version: 1,
+      cookies: this.cookieJar.toJSON(),
+      cardNumber: this.cardNumber,
+      pin: this.pin,
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Restore a previously authenticated session without hitting the network.
+   * The next real request() call will transparently re-auth if cookies are dead.
+   */
+  static fromState(
+    baseUrl: string,
+    state: SessionState,
+    opts?: { debug?: boolean },
+  ): HelmetSession {
+    const s = new HelmetSession(baseUrl, opts);
+    s.cookieJar = CookieJar.deserializeSync(state.cookies);
+    s.loggedIn = true;
+    s.cardNumber = state.cardNumber;
+    s.pin = state.pin;
+    return s;
   }
 
   async login(cardNumber: string, pin: string): Promise<void> {

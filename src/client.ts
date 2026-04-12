@@ -1,4 +1,4 @@
-import { HelmetSession } from "./session.js";
+import { HelmetSession, type SessionState } from "./session.js";
 import type {
   HelmetProfile,
   Loan,
@@ -8,9 +8,15 @@ import type {
   SearchResponse,
   SearchResult,
   AccountSummary,
+  HoldActionResult,
 } from "./types.js";
 import { parseLoans, parseRenewalResults, extractRenewalCsrf } from "./parsers/loans.js";
-import { parseHolds } from "./parsers/holds.js";
+import {
+  parseHolds,
+  extractHoldLinks,
+  extractHoldPlaceForm,
+  parseHoldActionResult,
+} from "./parsers/holds.js";
 import { parseFines } from "./parsers/fines.js";
 
 const FINNA_API = "https://api.finna.fi";
@@ -28,6 +34,22 @@ export class HelmetClient {
     });
     await session.login(profile.cardNumber, profile.pin);
     return new HelmetClient(session);
+  }
+
+  /**
+   * Restore a client from a previously exported session. No network I/O;
+   * the first authenticated request will re-auth transparently if cookies
+   * have expired (see HelmetSession.request).
+   */
+  static resume(profile: HelmetProfile, state: SessionState): HelmetClient {
+    const session = HelmetSession.fromState(profile.baseUrl, state, {
+      debug: profile.debug ?? false,
+    });
+    return new HelmetClient(session);
+  }
+
+  exportState(): SessionState {
+    return this.session.exportState();
   }
 
   loans = {
@@ -93,6 +115,73 @@ export class HelmetClient {
       const resp = await this.session.get("/MyResearch/Holds");
       const html = await resp.text();
       return parseHolds(html);
+    },
+
+    place: async (
+      recordId: string,
+      opts?: { pickupLocation?: string; comment?: string },
+    ): Promise<HoldActionResult> => {
+      // 1) Fetch the record page to harvest a session-scoped hashKey.
+      // Finna only renders the place-hold form behind a hashKey'd URL;
+      // without it, /Record/{id}/Hold silently serves the record page.
+      const recordPath = `/Record/${encodeURIComponent(recordId)}`;
+      const recordResp = await this.session.get(recordPath);
+      const recordHtml = await recordResp.text();
+      const links = extractHoldLinks(recordHtml);
+      const link = links.find((l) => l.recordId === recordId) ?? links[0];
+      if (!link) {
+        return {
+          success: false,
+          message:
+            "No hold link found on the record page — title may not be holdable for this account.",
+        };
+      }
+
+      // 2) GET the hashKey'd URL with layout=lightbox → real form fragment.
+      const holdUrl = appendLightboxParam(link.href);
+      const formHtml = await (await this.session.get(holdUrl)).text();
+      const form = extractHoldPlaceForm(formHtml);
+
+      const pickup =
+        opts?.pickupLocation ??
+        form.pickupLocations.find((o) => o.selected)?.value ??
+        form.pickupLocations[0]?.value;
+      if (!pickup) {
+        return {
+          success: false,
+          message: "No pickup locations offered for this record.",
+        };
+      }
+
+      // 3) POST to the same URL. No CSRF — cookie + hashKey are sufficient.
+      const body = new URLSearchParams();
+      body.set("gatheredDetails[pickUpLocation]", pickup);
+      body.set("gatheredDetails[comment]", opts?.comment ?? "");
+      body.set("layout", "lightbox");
+      body.set("placeHold", "Lähetä");
+
+      const resp = await this.session.post(holdUrl, {
+        body: body.toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
+      return parseHoldActionResult(await resp.text());
+    },
+
+    cancel: async (holdId: string): Promise<HoldActionResult> => {
+      // Finna's cancel form lives at /Holds/List (not /MyResearch/Holds) and
+      // uses a two-step confirmation. Sending confirm=1 on the first POST
+      // skips the confirmation screen. No CSRF input — session cookie suffices.
+      const body = new URLSearchParams();
+      body.append("selectedIDS[]", holdId);
+      body.append("cancelSelectedIDS[]", holdId);
+      body.set("cancelSelected", "1");
+      body.set("confirm", "1");
+
+      const resp = await this.session.post("/Holds/List", {
+        body: body.toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
+      return parseHoldActionResult(await resp.text());
     },
   };
 
@@ -186,6 +275,16 @@ function extractAuthor(record: Record<string, unknown>): string | null {
     if (keys.length > 0) return keys[0];
   }
   return null;
+}
+
+function appendLightboxParam(href: string): string {
+  // Preserve path + existing params; add layout=lightbox if absent; strip fragment.
+  const [pathWithQuery] = href.split("#");
+  const [path, query = ""] = pathWithQuery!.split("?");
+  const params = new URLSearchParams(query);
+  if (!params.has("layout")) params.set("layout", "lightbox");
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path!;
 }
 
 function parseDateString(dateStr: string): Date | null {

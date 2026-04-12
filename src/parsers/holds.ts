@@ -1,6 +1,31 @@
 import * as cheerio from "cheerio";
-import type { Hold } from "../types.js";
+import type { Hold, HoldActionResult } from "../types.js";
 import { extractStrongSiblingValues } from "./utils.js";
+
+export interface PickupLocationOption {
+  value: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface HoldPlaceForm {
+  csrf: string | null;
+  pickupLocations: PickupLocationOption[];
+}
+
+export interface HoldLink {
+  recordId: string;
+  level: string | null;
+  hashKey: string | null;
+  href: string;
+}
+
+export class HoldFormUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HoldFormUnavailableError";
+  }
+}
 
 /**
  * Parse the /MyResearch/Holds page HTML into structured Hold objects.
@@ -122,4 +147,94 @@ function deriveHoldStatus(
   }
 
   return "pending";
+}
+
+export function extractHoldLinks(html: string): HoldLink[] {
+  const $ = cheerio.load(html);
+  const links: HoldLink[] = [];
+
+  $("a.placehold[href*='/Hold']").each((_i, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+
+    const pathOnly = href.split("#")[0]!;
+    const [path, query = ""] = pathOnly.split("?");
+    const params = new URLSearchParams(query);
+
+    const match = /\/Record\/([^/]+)\/Hold/.exec(path!);
+    if (!match) return;
+
+    links.push({
+      recordId: decodeURIComponent(match[1]!),
+      level: params.get("level"),
+      hashKey: params.get("hashKey"),
+      href,
+    });
+  });
+
+  return links;
+}
+
+export function extractHoldPlaceForm(html: string): HoldPlaceForm {
+  const $ = cheerio.load(html);
+
+  const select =
+    $("select[name='gatheredDetails[pickUpLocation]']").first().length > 0
+      ? $("select[name='gatheredDetails[pickUpLocation]']").first()
+      : $("select[name='pickUpLocation']").first();
+
+  const pickupLocations: PickupLocationOption[] = [];
+  select.find("option").each((_i, el) => {
+    const opt = $(el);
+    const value = opt.attr("value") ?? "";
+    const label = opt.text().trim();
+    const selected = opt.attr("selected") !== undefined;
+    if (value) {
+      pickupLocations.push({ value, label, selected });
+    }
+  });
+
+  if (pickupLocations.length === 0) {
+    if ($("form[name='processLogin'], form#loginForm").length > 0) {
+      throw new HoldFormUnavailableError(
+        "Session expired — Finna served a login page instead of the hold form.",
+      );
+    }
+  }
+
+  return { csrf: null, pickupLocations };
+}
+
+/**
+ * Consolidate Finna flash alerts on a response HTML into a single action result.
+ */
+const HOLD_SUCCESS_MARKERS = [
+  "varauspyyntö onnistui",
+  "varaus tehty",
+  "your request was successful",
+  "hold placed",
+  "din reservation",
+];
+
+export function parseHoldActionResult(html: string): HoldActionResult {
+  const $ = cheerio.load(html);
+
+  const success = $(".alert-success").first().text().replace(/\s+/g, " ").trim();
+  if (success) {
+    return { success: true, message: success };
+  }
+
+  const danger = $(".alert-danger").first().text().replace(/\s+/g, " ").trim();
+  if (danger) {
+    return { success: false, message: danger };
+  }
+
+  const bodyText = $("body").text().toLowerCase();
+  for (const marker of HOLD_SUCCESS_MARKERS) {
+    if (bodyText.includes(marker)) {
+      return { success: true, message: marker };
+    }
+  }
+
+  return { success: true, message: null };
 }

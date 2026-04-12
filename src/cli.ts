@@ -3,6 +3,7 @@
 import { input, password, select, confirm } from "@inquirer/prompts";
 import { HelmetClient } from "./client.js";
 import { AuthenticationError } from "./session.js";
+import { VERSION } from "./version.js";
 import type { HelmetProfile, RenewalResult } from "./types.js";
 import {
   loadConfig,
@@ -14,6 +15,9 @@ import {
   maskCardNumber,
   profileLabel,
   resolveProfile,
+  loadSessionCache,
+  saveSessionCache,
+  clearSessionCache,
   type StoredProfile,
   type CliConfig,
 } from "./config.js";
@@ -31,6 +35,8 @@ interface ParsedArgs {
   debug: boolean;
   profile: string | null;
   allProfiles: boolean;
+  pickup: string | null;
+  comment: string | null;
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -40,6 +46,8 @@ function parseArgs(args: string[]): ParsedArgs {
   let debug = false;
   let profile: string | null = null;
   let allProfiles = false;
+  let pickup: string | null = null;
+  let comment: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -57,6 +65,26 @@ function parseArgs(args: string[]): ParsedArgs {
       i++;
     } else if (a.startsWith("--profile=")) {
       profile = a.slice("--profile=".length);
+    } else if (a === "--pickup") {
+      const next = args[i + 1];
+      if (!next || next.startsWith("--")) {
+        console.error("Error: --pickup requires a pickup location value.");
+        process.exit(1);
+      }
+      pickup = next;
+      i++;
+    } else if (a.startsWith("--pickup=")) {
+      pickup = a.slice("--pickup=".length);
+    } else if (a === "--comment") {
+      const next = args[i + 1];
+      if (next === undefined) {
+        console.error("Error: --comment requires a value.");
+        process.exit(1);
+      }
+      comment = next;
+      i++;
+    } else if (a.startsWith("--comment=")) {
+      comment = a.slice("--comment=".length);
     } else if (a.startsWith("--")) {
       // Unknown flag — leave silent for forward-compat; treat as passthrough ignored.
     } else {
@@ -64,7 +92,7 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  return { positional, json, all, debug, profile, allProfiles };
+  return { positional, json, all, debug, profile, allProfiles, pickup, comment };
 }
 
 const parsed = parseArgs(rawArgs);
@@ -81,6 +109,15 @@ async function main(): Promise<void> {
   const command = positional[0];
   const subcommand = positional[1];
 
+  if (
+    command === "version" ||
+    rawArgs.includes("--version") ||
+    rawArgs.includes("-V")
+  ) {
+    output(VERSION);
+    return;
+  }
+
   switch (command) {
     case "login":
       rejectAllProfiles("login");
@@ -90,7 +127,7 @@ async function main(): Promise<void> {
       await handleLoans(subcommand);
       break;
     case "holds":
-      await handleHolds();
+      await handleHolds(subcommand, positional.slice(2));
       break;
     case "fines":
       await handleFines();
@@ -151,6 +188,9 @@ async function handleLogin(): Promise<void> {
 
   output("Logging in...");
   try {
+    // Discard any cached session belonging to a previous login with this id.
+    await clearSessionCache(id);
+
     const client = await HelmetClient.login({
       baseUrl: BASE_URL,
       cardNumber,
@@ -179,6 +219,13 @@ async function handleLogin(): Promise<void> {
 
     const loans = await client.loans.list();
     output(`You have ${loans.length} item(s) checked out.`);
+
+    // Persist the authenticated jar so subsequent invocations skip the login handshake.
+    try {
+      await saveSessionCache(id, client.exportState());
+    } catch {
+      // Cache is best-effort.
+    }
   } catch (err) {
     if (err instanceof AuthenticationError) {
       console.error(`Login failed: ${err.message}`);
@@ -230,7 +277,7 @@ async function handleLoans(subcommand: string | undefined): Promise<void> {
         console.error("Usage: helmet loans renew <id> or helmet loans renew --all");
         process.exit(1);
       }
-      const client = await getAuthenticatedClient();
+      const { client, persist } = await getAuthenticatedClient();
       let results: RenewalResult[];
       if (allFlag) {
         output("Renewing all items...");
@@ -239,6 +286,7 @@ async function handleLoans(subcommand: string | undefined): Promise<void> {
         output(`Renewing item ${targetId}...`);
         results = await client.loans.renew(targetId!);
       }
+      await persist();
       if (jsonFlag) {
         outputJson(results);
       } else {
@@ -262,38 +310,94 @@ async function handleLoans(subcommand: string | undefined): Promise<void> {
   }
 }
 
-async function handleHolds(): Promise<void> {
-  const client = await getAuthenticatedClient();
-  const holds = await client.holds.list();
+async function handleHolds(
+  subcommand: string | undefined,
+  rest: string[],
+): Promise<void> {
+  switch (subcommand) {
+    case "list":
+    case undefined: {
+      const { client, persist } = await getAuthenticatedClient();
+      const holds = await client.holds.list();
+      await persist();
 
-  if (jsonFlag) {
-    outputJson(holds);
-  } else {
-    if (holds.length === 0) {
-      output("No holds.");
-      return;
+      if (jsonFlag) {
+        outputJson(holds);
+      } else {
+        if (holds.length === 0) {
+          output("No holds.");
+          return;
+        }
+        output(`\n  Holds (${holds.length}):\n`);
+        for (const h of holds) {
+          const statusLabel =
+            h.status === "available_for_pickup"
+              ? " [READY FOR PICKUP]"
+              : h.status === "in_transit"
+                ? " [IN TRANSIT]"
+                : "";
+          output(`  ${h.title}${statusLabel}`);
+          if (h.author) output(`    Author: ${h.author}`);
+          if (h.queuePosition != null) output(`    Queue position: ${h.queuePosition}`);
+          if (h.pickupLocation) output(`    Pickup: ${h.pickupLocation}`);
+          if (h.expirationDate) output(`    Expires: ${h.expirationDate}`);
+          output("");
+        }
+      }
+      break;
     }
-    output(`\n  Holds (${holds.length}):\n`);
-    for (const h of holds) {
-      const statusLabel =
-        h.status === "available_for_pickup"
-          ? " [READY FOR PICKUP]"
-          : h.status === "in_transit"
-            ? " [IN TRANSIT]"
-            : "";
-      output(`  ${h.title}${statusLabel}`);
-      if (h.author) output(`    Author: ${h.author}`);
-      if (h.queuePosition != null) output(`    Queue position: ${h.queuePosition}`);
-      if (h.pickupLocation) output(`    Pickup: ${h.pickupLocation}`);
-      if (h.expirationDate) output(`    Expires: ${h.expirationDate}`);
-      output("");
+    case "place": {
+      const recordId = rest[0];
+      if (!recordId) {
+        console.error("Usage: helmet holds place <record-id> [--pickup <location>]");
+        process.exit(1);
+      }
+      const { client, persist } = await getAuthenticatedClient();
+      const result = await client.holds.place(recordId, {
+        pickupLocation: parsed.pickup ?? undefined,
+        comment: parsed.comment ?? undefined,
+      });
+      await persist();
+      renderHoldActionResult(result, "place");
+      if (!result.success) process.exit(1);
+      break;
     }
+    case "cancel": {
+      const holdId = rest[0];
+      if (!holdId) {
+        console.error("Usage: helmet holds cancel <hold-id>");
+        process.exit(1);
+      }
+      const { client, persist } = await getAuthenticatedClient();
+      const result = await client.holds.cancel(holdId);
+      await persist();
+      renderHoldActionResult(result, "cancel");
+      if (!result.success) process.exit(1);
+      break;
+    }
+    default:
+      console.error(`Unknown holds subcommand: ${subcommand}`);
+      process.exit(1);
   }
 }
 
+function renderHoldActionResult(
+  result: { success: boolean; message: string | null },
+  verb: "place" | "cancel",
+): void {
+  if (jsonFlag) {
+    outputJson(result);
+    return;
+  }
+  const status = result.success ? "OK" : "FAILED";
+  const msg = result.message ?? (result.success ? `Hold ${verb} submitted.` : `Hold ${verb} failed.`);
+  output(`[${status}] ${msg}`);
+}
+
 async function handleFines(): Promise<void> {
-  const client = await getAuthenticatedClient();
+  const { client, persist } = await getAuthenticatedClient();
   const { fines, total } = await client.fines.list();
+  await persist();
 
   if (jsonFlag) {
     outputJson({ fines, total });
@@ -443,6 +547,7 @@ async function handleProfiles(
         config.lastProfileId = config.profiles[0]?.id ?? null;
       }
       await saveConfig(config);
+      await clearSessionCache(target.id);
       if (jsonFlag) {
         outputJson({ ok: true, removed: target.id });
       } else {
@@ -626,6 +731,24 @@ async function handleInteractive(): Promise<void> {
 // ─── Multi-profile plumbing ─────────────────────────────────────
 
 async function loginAs(profile: StoredProfile): Promise<HelmetClient> {
+  const { client } = await authenticateProfile(profile);
+  return client;
+}
+
+interface AuthenticatedProfile {
+  client: HelmetClient;
+  profile: StoredProfile;
+  persist: () => Promise<void>;
+}
+
+/**
+ * Load the cached session if present, otherwise perform a fresh login.
+ * The returned `persist` saves the updated cookie jar back to the cache and
+ * stamps lastUsedAt; call it after a successful command to keep the cache warm.
+ */
+async function authenticateProfile(
+  profile: StoredProfile,
+): Promise<AuthenticatedProfile> {
   const pin = revealSecret(profile.pinObfuscated);
   if (!pin) {
     throw new Error(
@@ -638,7 +761,31 @@ async function loginAs(profile: StoredProfile): Promise<HelmetClient> {
     pin,
     debug: debugFlag,
   };
-  return HelmetClient.login(helmetProfile);
+
+  const cached = await loadSessionCache(profile.id);
+  const client = cached
+    ? HelmetClient.resume(helmetProfile, cached)
+    : await HelmetClient.login(helmetProfile);
+
+  let persisted = false;
+  const persist = async (): Promise<void> => {
+    if (persisted) return;
+    persisted = true;
+    try {
+      await saveSessionCache(profile.id, client.exportState());
+    } catch {
+      // Cache write is best-effort — never fail the command because of it.
+    }
+    const config = await loadConfig();
+    const stored = config.profiles.find((p) => p.id === profile.id);
+    if (stored) {
+      stored.lastUsedAt = new Date().toISOString();
+      config.lastProfileId = profile.id;
+      await saveConfig(config);
+    }
+  };
+
+  return { client, profile, persist };
 }
 
 async function resolveProfileOrExit(
@@ -679,7 +826,7 @@ function printResolveError(
   }
 }
 
-async function getAuthenticatedClient(): Promise<HelmetClient> {
+async function getAuthenticatedClient(): Promise<AuthenticatedProfile> {
   const config = await loadConfig();
 
   if (config.profiles.length === 0) {
@@ -691,25 +838,22 @@ async function getAuthenticatedClient(): Promise<HelmetClient> {
       console.error("No profile available after login.");
       process.exit(1);
     }
-    return loginAsOrExit(p, refreshed);
+    return authenticateOrExit(p);
   }
 
   const profile = await resolveProfileOrExit(config, parsed.profile);
-  return loginAsOrExit(profile, config);
+  return authenticateOrExit(profile);
 }
 
-async function loginAsOrExit(
+async function authenticateOrExit(
   profile: StoredProfile,
-  config: CliConfig,
-): Promise<HelmetClient> {
+): Promise<AuthenticatedProfile> {
   try {
-    const client = await loginAs(profile);
-    profile.lastUsedAt = new Date().toISOString();
-    config.lastProfileId = profile.id;
-    await saveConfig(config);
-    return client;
+    return await authenticateProfile(profile);
   } catch (err) {
     if (err instanceof AuthenticationError) {
+      // Stored credentials no longer work; drop any cache so next run starts fresh.
+      await clearSessionCache(profile.id);
       console.error(`Authentication failed for ${profileLabel(profile)}: ${err.message}`);
       console.error("Try logging in again: helmet login");
       process.exit(1);
@@ -733,8 +877,9 @@ async function runSelectedOrFanOut<T>(
   },
 ): Promise<void> {
   if (!parsed.allProfiles) {
-    const client = await getAuthenticatedClient();
+    const { client, persist } = await getAuthenticatedClient();
     const data = await run(client);
+    await persist();
     if (jsonFlag) {
       outputJson(data);
     } else {
@@ -754,8 +899,9 @@ async function runSelectedOrFanOut<T>(
 
   for (const profile of config.profiles) {
     try {
-      const client = await loginAs(profile);
+      const { client, persist } = await authenticateProfile(profile);
       const data = await run(client);
+      await persist();
       profile.lastUsedAt = new Date().toISOString();
       anyOk = true;
       rows.push({
@@ -829,6 +975,8 @@ function outputJson(data: unknown): void {
 
 function printUsage(): void {
   output(`
+  helmet ${VERSION}
+
   Usage: helmet <command> [options]
 
   Commands:
@@ -836,7 +984,9 @@ function printUsage(): void {
     loans list [--json]          List checked-out items
     loans renew <id> [--json]    Renew a specific item
     loans renew --all [--json]   Renew all renewable items
-    holds [--json]               List current holds
+    holds list [--json]                      List current holds
+    holds place <record-id> [--pickup <loc>] [--comment <text>] Place a hold on a catalog record
+    holds cancel <hold-id>                   Cancel an existing hold
     fines [--json]               List fines and total
     search <query> [--json]      Search the catalog (unauthenticated)
     summary [--json]             Account summary
@@ -844,6 +994,7 @@ function printUsage(): void {
     profiles remove <selector>   Remove a saved profile
     profiles rename <selector> <name>  Rename a profile's display name
     config path                  Show config file path
+    version                      Print helmet version
 
   Profile options:
     --profile <selector>  Target one profile (id, card, or display name)
@@ -853,6 +1004,7 @@ function printUsage(): void {
     --json    Output as JSON (for agents)
     --all     Apply to all items (loans renew)
     --debug   Show debug HTTP logs
+    --version, -V  Print helmet version
 `);
 }
 

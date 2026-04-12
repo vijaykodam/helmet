@@ -32,7 +32,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "clean": "rm -rf dist",
+    "fresh": "pnpm clean && pnpm build",
     "start": "node dist/cli.js",
     "lint": "echo 'add lint'",
     "test": "echo 'add tests'",

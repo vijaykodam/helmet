@@ -14,7 +14,7 @@ npm install -g @helmet-ai/helmet
 helmet login
 ```
 
-Enter your library card number and PIN when prompted. You can also set an optional display name (e.g. `Alice`) which makes multi-profile commands much more ergonomic. Credentials are saved locally at `~/.config/helmet/config.json`. Run `helmet login` once per card to register additional family members.
+Enter your library card number and PIN when prompted. You can also set an optional display name (e.g. `Alice`) which makes multi-profile commands much more ergonomic. Credentials are saved locally at `~/.config/helmet/config.json` and the authenticated cookie jar is cached per-profile at `~/.config/helmet/sessions/<id>.json` (both mode 0600) so subsequent commands skip the full login handshake. Run `helmet login` once per card to register additional family members.
 
 ## Commands
 
@@ -24,13 +24,16 @@ Enter your library card number and PIN when prompted. You can also set an option
 | `helmet loans list` | List checked-out items |
 | `helmet loans renew <id>` | Renew a specific item |
 | `helmet loans renew --all` | Renew all renewable items |
-| `helmet holds` | List current holds |
+| `helmet holds list` | List current holds |
+| `helmet holds place <record-id>` | Place a hold on a catalog record (`--pickup <loc>`, `--comment <text>`) |
+| `helmet holds cancel <hold-id>` | Cancel an active hold |
 | `helmet fines` | List fines and total |
 | `helmet search <query>` | Search the Helmet catalog |
 | `helmet profiles list` | List saved profiles |
 | `helmet profiles rename <selector> <name>` | Rename a profile's display name |
 | `helmet profiles remove <selector>` | Remove a saved profile |
 | `helmet config path` | Show config file location |
+| `helmet version` | Print CLI version (also `helmet --version` / `-V`) |
 
 All commands accept `--json` for machine-readable output and `--debug` for HTTP logging.
 
@@ -83,7 +86,7 @@ The skill provides triage guidance so agents prioritize overdue loans, fines, an
 The same package exposes a TypeScript client you can import:
 
 ```ts
-import { HelmetClient } from "@helmet-ai/helmet";
+import { HelmetClient, VERSION } from "@helmet-ai/helmet";
 
 const client = new HelmetClient({ baseUrl: "https://helmet.finna.fi" });
 await client.login({ cardNumber: "...", pin: "..." });

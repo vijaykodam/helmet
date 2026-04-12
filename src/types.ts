@@ -68,6 +68,11 @@ export interface SearchResponse {
   status: string;
 }
 
+export interface HoldActionResult {
+  success: boolean;
+  message: string | null;
+}
+
 export interface AccountSummary {
   loans: Loan[];
   holds: Hold[];

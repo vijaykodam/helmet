@@ -1,12 +1,21 @@
 export { HelmetClient } from "./client.js";
+export { VERSION } from "./version.js";
 export { HelmetSession, AuthenticationError, APIError } from "./session.js";
-export { parseHolds } from "./parsers/holds.js";
+export type { SessionState } from "./session.js";
+export {
+  parseHolds,
+  extractHoldLinks,
+  extractHoldPlaceForm,
+  parseHoldActionResult,
+  HoldFormUnavailableError,
+} from "./parsers/holds.js";
 export { parseFines } from "./parsers/fines.js";
 export type {
   HelmetProfile,
   Loan,
   RenewalResult,
   Hold,
+  HoldActionResult,
   Fine,
   SearchResult,
   SearchResponse,

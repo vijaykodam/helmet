@@ -1,7 +1,7 @@
 ---
 name: helmet
-version: 0.2.0
-description: Access Finland's Helmet library system from AI agents. Check loans, renew books, view holds and fines for one or many family accounts via the helmet CLI. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` to cover the whole family.
+version: 0.1.0
+description: Access Finland's Helmet library system from AI agents. Check loans, renew books, place/cancel holds, and view fines for one or many family accounts via the helmet CLI. Session cookies are cached between invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` to cover the whole family.
 metadata:
   openclaw:
     requires:
@@ -57,7 +57,7 @@ The CLI stores one or more library accounts as *profiles*. Use these when acting
 | `--profile <selector>` | Target one profile. Selector is any of: display name (`Alice`), unique display-name prefix (`al`), card number, or full id (`helmet\|<card>`). |
 | `--all-profiles` | Fan out across every saved profile. Works on `summary` and `loans list`. Mutually exclusive with `--profile`. |
 
-`--all-profiles` is **not** supported on `loans renew` (destructive — always target one profile), `search` (unauthenticated), or `login`.
+`--all-profiles` is **not** supported on `loans renew`, `holds place`, `holds cancel` (all destructive — always target one profile), `search` (unauthenticated), or `login`.
 
 ### Fan-out JSON shape
 
@@ -80,6 +80,10 @@ Enumerate saved profiles. Returns `id`, `displayName`, `cardNumber`, and `lastUs
 
 Local-only management of saved profiles (no Helmet API calls).
 
+## Session cache
+
+Each profile's authenticated cookie jar is persisted at `~/.config/helmet/sessions/<id>.json` (mode 0600). The first command per profile walks the full Finna login handshake (~2.7s); subsequent commands skip straight to the data request (~1.3s). Stale cookies are handled transparently — if Finna redirects to the login page, the session auto-re-authenticates using the stored PIN. You do not need to manage the cache explicitly; it is cleared automatically on `helmet login`, `helmet profiles remove`, or an unrecoverable `AuthenticationError`.
+
 ## Commands
 
 All commands accept `--json` for machine-readable output. Always use `--json` when calling from an agent.
@@ -100,9 +104,17 @@ Renew a specific loan by its ID. Returns success/failure with new due date or er
 
 Renew every renewable item on one profile. Same profile-targeting rule as above — pass `--profile <selector>` explicitly.
 
-### `helmet holds --json`
+### `helmet holds list --json`
 
-List current holds (status: `waiting`, `in_transit`, `available_for_pickup`), queue position, pickup location, expiration date.
+List current holds (status: `pending`, `in_transit`, `available_for_pickup`), queue position, pickup location, expiration date. `helmet holds` (no subcommand) is an alias.
+
+### `helmet holds place <record-id> [--pickup <location>] [--comment <text>] --json`
+
+Place a title-level hold on a Helmet catalog record. The `record-id` comes from `helmet search` (e.g. `helmet.2613471`). Pickup defaults to the user's preferred branch; override with `--pickup <code>` (branch code like `e71al`, not a display name). The `--comment` field is used only for bookmobile pickup stops. Returns `{ success, message }`; on success, message is typically `"Varauspyyntö onnistui."`. **Requires** `--profile <selector>` when multiple profiles exist — the CLI will not auto-pick a profile for a destructive/state-changing operation.
+
+### `helmet holds cancel <hold-id> --json`
+
+Cancel an active hold. The `hold-id` is the `id` field from `helmet holds list --json`. Returns `{ success, message }`; on success, message is typically `"1 varaus(ta) poistettu."`. Same profile-targeting rule as `place` — pass `--profile <selector>` explicitly.
 
 ### `helmet fines --json`
 
@@ -111,6 +123,10 @@ List individual fines and total amount owed.
 ### `helmet search <query> --json`
 
 Search the Helmet catalog. Unauthenticated — `--profile` has no effect and `--all-profiles` is rejected.
+
+### `helmet version` / `helmet --version` / `helmet -V`
+
+Print the CLI version (e.g. `0.1.0`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
 
 ## Triage Guidance
 
