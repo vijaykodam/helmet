@@ -7,5 +7,5 @@ else
   # Fallback: run from local build
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-  node "$REPO_ROOT/packages/helmet-cli/dist/index.js" "$@"
+  node "$REPO_ROOT/dist/cli.js" "$@"
 fi

@@ -5,7 +5,7 @@ A command-line interface for **Finland's Helmet library system** (Helsinki Metro
 ## Install
 
 ```bash
-npm install -g @helmet/cli
+npm install -g @helmet-ai/helmet
 ```
 
 ## Setup
@@ -41,12 +41,17 @@ npx skills add vijaykodam/helmet
 
 The skill provides triage guidance so agents prioritize overdue loans, fines, and ready-for-pickup holds.
 
-## Packages
+## Library usage
 
-| Package | Description |
-|---------|-------------|
-| [`@helmet/client`](packages/helmet-client) | TypeScript client library for helmet.finna.fi |
-| [`@helmet/cli`](packages/helmet-cli) | CLI built on top of @helmet/client |
+The same package exposes a TypeScript client you can import:
+
+```ts
+import { HelmetClient } from "@helmet-ai/helmet";
+
+const client = new HelmetClient({ baseUrl: "https://helmet.finna.fi" });
+await client.login({ cardNumber: "...", pin: "..." });
+const loans = await client.getLoans();
+```
 
 ## License
 
