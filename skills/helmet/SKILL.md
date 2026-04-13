@@ -1,6 +1,6 @@
 ---
 name: helmet
-version: 0.1.0
+version: 0.1.1
 description: Access the Helmet public-library network (Helsinki Metropolitan Area — Helsinki, Espoo, Vantaa, Kauniainen — on helmet.finna.fi, built on Finna/VuFind) from AI agents. Check loans and due dates, renew books, place or cancel holds (reservations), view fines, and search the catalog — for one library card or many family accounts in a single call. Uses the patron's card number + PIN; session cookies are cached between CLI invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` for a whole family.
 metadata:
   openclaw:
@@ -136,7 +136,7 @@ Search the Helmet catalog. Unauthenticated — `--profile` has no effect and `--
 
 ### `helmet version` / `helmet --version` / `helmet -V`
 
-Print the CLI version (e.g. `0.1.0`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
+Print the CLI version (e.g. `0.1.1`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
 
 ## Triage Guidance
 
