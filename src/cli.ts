@@ -35,7 +35,6 @@ interface ParsedArgs {
   debug: boolean;
   profile: string | null;
   allProfiles: boolean;
-  pickup: string | null;
   comment: string | null;
 }
 
@@ -46,7 +45,6 @@ function parseArgs(args: string[]): ParsedArgs {
   let debug = false;
   let profile: string | null = null;
   let allProfiles = false;
-  let pickup: string | null = null;
   let comment: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
@@ -65,16 +63,6 @@ function parseArgs(args: string[]): ParsedArgs {
       i++;
     } else if (a.startsWith("--profile=")) {
       profile = a.slice("--profile=".length);
-    } else if (a === "--pickup") {
-      const next = args[i + 1];
-      if (!next || next.startsWith("--")) {
-        console.error("Error: --pickup requires a pickup location value.");
-        process.exit(1);
-      }
-      pickup = next;
-      i++;
-    } else if (a.startsWith("--pickup=")) {
-      pickup = a.slice("--pickup=".length);
     } else if (a === "--comment") {
       const next = args[i + 1];
       if (next === undefined) {
@@ -92,7 +80,7 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  return { positional, json, all, debug, profile, allProfiles, pickup, comment };
+  return { positional, json, all, debug, profile, allProfiles, comment };
 }
 
 const parsed = parseArgs(rawArgs);
@@ -349,12 +337,11 @@ async function handleHolds(
     case "place": {
       const recordId = rest[0];
       if (!recordId) {
-        console.error("Usage: helmet holds place <record-id> [--pickup <location>]");
+        console.error("Usage: helmet holds place <record-id> [--comment <text>]");
         process.exit(1);
       }
       const { client, persist } = await getAuthenticatedClient();
       const result = await client.holds.place(recordId, {
-        pickupLocation: parsed.pickup ?? undefined,
         comment: parsed.comment ?? undefined,
       });
       await persist();
@@ -439,9 +426,14 @@ async function handleSearch(query: string): Promise<void> {
   } else {
     output(`\n  Search results for "${query}" (${data.resultCount ?? 0} total):\n`);
     for (const r of records.slice(0, 20)) {
+      const buildings = (r.buildings ?? []) as Array<{ value: string; translated: string }>;
+      const branches = buildings
+        .filter((b) => b.value.startsWith("2/"))
+        .map((b) => b.translated);
       output(`  ${r.title}`);
       if (r.primaryAuthor) output(`    Author: ${r.primaryAuthor}`);
       if (r.year) output(`    Year: ${r.year}`);
+      if (branches.length > 0) output(`    Locations: ${branches.join(", ")}`);
       output(`    ID: ${r.id}`);
       output("");
     }
@@ -984,9 +976,9 @@ function printUsage(): void {
     loans list [--json]          List checked-out items
     loans renew <id> [--json]    Renew a specific item
     loans renew --all [--json]   Renew all renewable items
-    holds list [--json]                      List current holds
-    holds place <record-id> [--pickup <loc>] [--comment <text>] Place a hold on a catalog record
-    holds cancel <hold-id>                   Cancel an existing hold
+    holds list [--json]               List current holds
+    holds place <record-id> [--comment <text>] Place a hold on a catalog record
+    holds cancel <hold-id>            Cancel an existing hold
     fines [--json]               List fines and total
     search <query> [--json]      Search the catalog (unauthenticated)
     summary [--json]             Account summary

@@ -6,6 +6,7 @@ export {
   parseHolds,
   extractHoldLinks,
   extractHoldPlaceForm,
+  isUnauthenticatedHoldHtml,
   parseHoldActionResult,
   HoldFormUnavailableError,
 } from "./parsers/holds.js";

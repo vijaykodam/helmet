@@ -25,7 +25,7 @@ Enter your library card number and PIN when prompted. You can also set an option
 | `helmet loans renew <id>` | Renew a specific item |
 | `helmet loans renew --all` | Renew all renewable items |
 | `helmet holds list` | List current holds |
-| `helmet holds place <record-id>` | Place a hold on a catalog record (`--pickup <loc>`, `--comment <text>`) |
+| `helmet holds place <record-id>` | Place a hold on a catalog record (uses the default pickup location from the hold form; optional `--comment <text>` for bookmobile stops) |
 | `helmet holds cancel <hold-id>` | Cancel an active hold |
 | `helmet fines` | List fines and total |
 | `helmet search <query>` | Search the Helmet catalog |

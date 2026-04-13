@@ -8,6 +8,7 @@ local/
 *.env
 PLAN-*.md
 .playwright-mcp/
+.playwright-cli/
 .remember/
 .changeset/README.md
 session-report-*

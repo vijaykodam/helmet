@@ -15,6 +15,8 @@ import {
   parseHolds,
   extractHoldLinks,
   extractHoldPlaceForm,
+  HoldFormUnavailableError,
+  isUnauthenticatedHoldHtml,
   parseHoldActionResult,
 } from "./parsers/holds.js";
 import { parseFines } from "./parsers/fines.js";
@@ -121,50 +123,111 @@ export class HelmetClient {
       recordId: string,
       opts?: { pickupLocation?: string; comment?: string },
     ): Promise<HoldActionResult> => {
-      // 1) Fetch the record page to harvest a session-scoped hashKey.
-      // Finna only renders the place-hold form behind a hashKey'd URL;
-      // without it, /Record/{id}/Hold silently serves the record page.
       const recordPath = `/Record/${encodeURIComponent(recordId)}`;
-      const recordResp = await this.session.get(recordPath);
-      const recordHtml = await recordResp.text();
-      const links = extractHoldLinks(recordHtml);
-      const link = links.find((l) => l.recordId === recordId) ?? links[0];
-      if (!link) {
-        return {
-          success: false,
-          message:
-            "No hold link found on the record page — title may not be holdable for this account.",
-        };
-      }
+      const ajaxPath = `${recordPath}/AjaxTab`;
+      const sessionExpiredMessage =
+        "Session expired while loading hold details — please retry after logging in again.";
 
-      // 2) GET the hashKey'd URL with layout=lightbox → real form fragment.
-      const holdUrl = appendLightboxParam(link.href);
-      const formHtml = await (await this.session.get(holdUrl)).text();
-      const form = extractHoldPlaceForm(formHtml);
+      const fetchHoldingsTab = async (): Promise<string> => {
+        const resp = await this.session.post(ajaxPath, {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "tab=holdings&sid=",
+        });
+        return resp.text();
+      };
 
-      const pickup =
-        opts?.pickupLocation ??
-        form.pickupLocations.find((o) => o.selected)?.value ??
-        form.pickupLocations[0]?.value;
-      if (!pickup) {
-        return {
-          success: false,
-          message: "No pickup locations offered for this record.",
-        };
-      }
+      const runPlaceFlow = async (allowRetry: boolean): Promise<HoldActionResult> => {
+        // 1) Fetch the holdings tab via AJAX to harvest the session-scoped hashKey.
+        // Finna lazy-loads the place-hold link into the holdings tab content; the
+        // initial server-rendered record page does not include it. The hashKey'd
+        // URL is required — without it, /Record/{id}/Hold silently serves the
+        // record page instead of the hold form.
+        const holdingsHtml = await fetchHoldingsTab();
+        if (isUnauthenticatedHoldHtml(holdingsHtml)) {
+          if (allowRetry && (await this.session.tryReauth())) {
+            return runPlaceFlow(false);
+          }
+          return {
+            success: false,
+            message: sessionExpiredMessage,
+          };
+        }
 
-      // 3) POST to the same URL. No CSRF — cookie + hashKey are sufficient.
-      const body = new URLSearchParams();
-      body.set("gatheredDetails[pickUpLocation]", pickup);
-      body.set("gatheredDetails[comment]", opts?.comment ?? "");
-      body.set("layout", "lightbox");
-      body.set("placeHold", "Lähetä");
+        const links = extractHoldLinks(holdingsHtml);
+        const link = links.find((l) => l.recordId === recordId) ?? links[0];
+        if (!link) {
+          return {
+            success: false,
+            message:
+              "No hold link found in the holdings tab — title may not be holdable for this account.",
+          };
+        }
 
-      const resp = await this.session.post(holdUrl, {
-        body: body.toString(),
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      });
-      return parseHoldActionResult(await resp.text());
+        // 2) GET the hashKey'd URL with layout=lightbox → real form fragment.
+        const holdUrl = appendLightboxParam(link.href);
+        const formHtml = await (await this.session.get(holdUrl)).text();
+        if (isUnauthenticatedHoldHtml(formHtml)) {
+          if (allowRetry && (await this.session.tryReauth())) {
+            return runPlaceFlow(false);
+          }
+          return {
+            success: false,
+            message: sessionExpiredMessage,
+          };
+        }
+
+        let form: ReturnType<typeof extractHoldPlaceForm>;
+        try {
+          form = extractHoldPlaceForm(formHtml);
+        } catch (err) {
+          if (err instanceof HoldFormUnavailableError) {
+            return {
+              success: false,
+              message: err.message,
+            };
+          }
+          throw err;
+        }
+
+        const pickup =
+          opts?.pickupLocation ??
+          form.pickupLocations.find((o) => o.selected)?.value ??
+          form.pickupLocations[0]?.value;
+        if (!pickup) {
+          return {
+            success: false,
+            message: "No pickup locations offered for this record.",
+          };
+        }
+
+        // 3) POST to the same URL. No CSRF — cookie + hashKey are sufficient.
+        const body = new URLSearchParams();
+        body.set("gatheredDetails[pickUpLocation]", pickup);
+        body.set("gatheredDetails[comment]", opts?.comment ?? "");
+        body.set("layout", "lightbox");
+        body.set("placeHold", "Lähetä");
+
+        const postHtml = await (
+          await this.session.post(holdUrl, {
+            body: body.toString(),
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          })
+        ).text();
+
+        if (isUnauthenticatedHoldHtml(postHtml)) {
+          if (allowRetry && (await this.session.tryReauth())) {
+            return runPlaceFlow(false);
+          }
+          return {
+            success: false,
+            message: sessionExpiredMessage,
+          };
+        }
+
+        return parseHoldActionResult(postHtml);
+      };
+
+      return runPlaceFlow(true);
     },
 
     cancel: async (holdId: string): Promise<HoldActionResult> => {

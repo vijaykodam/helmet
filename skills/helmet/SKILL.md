@@ -32,7 +32,7 @@ Access the **Helmet library system** (Helsinki Metropolitan Area libraries) from
 - "Is anything overdue for me or the kids at the library?"
 - "Renew everything that's due this week."
 - "How many holds do I have, and which are ready for pickup?"
-- "Place a hold on *Crying in H Mart* for pickup at Sello."
+- "Place a hold on *Dog Man Scarlet Shedder*."
 - "Cancel my hold on the Finnish language audiobook."
 - "Do I owe any fines right now?"
 - "Search the Helmet catalog for 'Tove Jansson'."
@@ -118,9 +118,9 @@ Renew every renewable item on one profile. Same profile-targeting rule as above 
 
 List current holds (status: `pending`, `in_transit`, `available_for_pickup`), queue position, pickup location, expiration date. `helmet holds` (no subcommand) is an alias.
 
-### `helmet holds place <record-id> [--pickup <location>] [--comment <text>] --json`
+### `helmet holds place <record-id> [--comment <text>] --json`
 
-Place a title-level hold on a Helmet catalog record. The `record-id` comes from `helmet search` (e.g. `helmet.2613471`). Pickup defaults to the user's preferred branch; override with `--pickup <code>` (branch code like `e71al`, not a display name). The `--comment` field is used only for bookmobile pickup stops. Returns `{ success, message }`; on success, message is typically `"Varauspyyntö onnistui."`. **Requires** `--profile <selector>` when multiple profiles exist — the CLI will not auto-pick a profile for a destructive/state-changing operation.
+Place a title-level hold on a Helmet catalog record. The `record-id` comes from `helmet search` (e.g. `helmet.2613471`). The CLI uses the default pickup location preselected by Helmet in the hold form. The `--comment` field is used only for bookmobile pickup stops. Returns `{ success, message }`; on success, message is typically `"Varauspyyntö onnistui."`. **Requires** `--profile <selector>` when multiple profiles exist — the CLI will not auto-pick a profile for a destructive/state-changing operation.
 
 ### `helmet holds cancel <hold-id> --json`
 

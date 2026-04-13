@@ -27,6 +27,24 @@ export class HoldFormUnavailableError extends Error {
   }
 }
 
+const HOLD_SESSION_EXPIRED_MESSAGE =
+  "Session expired — Finna served a login page instead of hold details.";
+
+export function isUnauthenticatedHoldHtml(html: string): boolean {
+  const $ = cheerio.load(html);
+  const normalized = html.toLowerCase();
+
+  if (
+    normalized.includes("/myresearch/completelogin")
+    || normalized.includes("login-link")
+    || normalized.includes("processlogin")
+  ) {
+    return true;
+  }
+
+  return $("form#loginForm, form[name='processLogin']").length > 0;
+}
+
 /**
  * Parse the /MyResearch/Holds page HTML into structured Hold objects.
  *
@@ -178,6 +196,10 @@ export function extractHoldLinks(html: string): HoldLink[] {
 export function extractHoldPlaceForm(html: string): HoldPlaceForm {
   const $ = cheerio.load(html);
 
+  if (isUnauthenticatedHoldHtml(html)) {
+    throw new HoldFormUnavailableError(HOLD_SESSION_EXPIRED_MESSAGE);
+  }
+
   const select =
     $("select[name='gatheredDetails[pickUpLocation]']").first().length > 0
       ? $("select[name='gatheredDetails[pickUpLocation]']").first()
@@ -195,9 +217,20 @@ export function extractHoldPlaceForm(html: string): HoldPlaceForm {
   });
 
   if (pickupLocations.length === 0) {
-    if ($("form[name='processLogin'], form#loginForm").length > 0) {
+    const alertText = $(".alert-danger, .alert-warning")
+      .first()
+      .text()
+      .replace(/\s+/g, " ")
+      .trim();
+    if (alertText) {
+      throw new HoldFormUnavailableError(alertText);
+    }
+
+    const hasHoldForm =
+      $("form[name='placeHold']").length > 0 || $("[name='placeHold']").length > 0;
+    if (!hasHoldForm) {
       throw new HoldFormUnavailableError(
-        "Session expired — Finna served a login page instead of the hold form.",
+        "Hold form unavailable — Finna served unexpected content.",
       );
     }
   }
@@ -217,6 +250,10 @@ const HOLD_SUCCESS_MARKERS = [
 ];
 
 export function parseHoldActionResult(html: string): HoldActionResult {
+  if (isUnauthenticatedHoldHtml(html)) {
+    return { success: false, message: HOLD_SESSION_EXPIRED_MESSAGE };
+  }
+
   const $ = cheerio.load(html);
 
   const success = $(".alert-success").first().text().replace(/\s+/g, " ").trim();

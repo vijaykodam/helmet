@@ -240,6 +240,21 @@ export class HelmetSession {
     return this.request(path, { ...init, method: "POST" });
   }
 
+  /**
+   * Re-authenticate using stored credentials. Returns true on success, false if
+   * no credentials are available (e.g. session was restored without a PIN).
+   * Call this when a page returns 200 but with unauthenticated content.
+   */
+  async tryReauth(): Promise<boolean> {
+    if (!this.cardNumber || !this.pin) return false;
+    if (this.debug) {
+      console.log("[helmet] Session expired (soft-expiry detected), re-authenticating...");
+    }
+    this.loggedIn = false;
+    await this.login(this.cardNumber, this.pin);
+    return true;
+  }
+
   private async rawRequest(path: string, init?: RequestInit): Promise<Response> {
     const url = new URL(path, this.baseUrl).toString();
     const cookieHeader = this.cookieJar.getCookieStringSync(url);
