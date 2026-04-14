@@ -131,6 +131,10 @@ async function main(): Promise<void> {
     case "summary":
       await handleSummary();
       break;
+    case "status":
+      rejectAllFlag("status");
+      await handleStatus();
+      break;
     case "profiles":
       rejectAllProfiles("profiles");
       await handleProfiles(subcommand, positional.slice(2));
@@ -155,6 +159,13 @@ async function main(): Promise<void> {
 function rejectAllProfiles(command: string): void {
   if (parsed.allProfiles) {
     console.error(`Error: --all-profiles is not supported for "${command}".`);
+    process.exit(1);
+  }
+}
+
+function rejectAllFlag(command: string): void {
+  if (parsed.all) {
+    console.error(`Error: --all is not supported for "${command}".`);
     process.exit(1);
   }
 }
@@ -476,6 +487,131 @@ async function handleSummary(): Promise<void> {
       output("");
     },
   });
+}
+
+async function handleStatus(): Promise<void> {
+  const checkedAt = new Date().toISOString();
+
+  if (parsed.allProfiles) {
+    const config = await loadConfig();
+    if (config.profiles.length === 0) {
+      if (jsonFlag) {
+        outputJson([]);
+      } else {
+        console.error("No profiles saved. Run: helmet login");
+      }
+      process.exit(jsonFlag ? 0 : 1);
+    }
+
+    const rows: Array<{
+      profile: { id: string; displayName: string | null };
+      ok: boolean;
+      authenticated: boolean;
+      errorCode?: string;
+      message?: string;
+    }> = [];
+    let allAuthed = true;
+
+    for (const profile of config.profiles) {
+      const row = await probeProfileAuth(profile);
+      rows.push(row);
+      if (!row.authenticated) allAuthed = false;
+    }
+
+    if (jsonFlag) {
+      outputJson({
+        version: VERSION,
+        checkedAt,
+        profiles: rows,
+      });
+    } else {
+      for (const r of rows) {
+        const label = r.profile.displayName ?? r.profile.id;
+        const state = r.authenticated ? "OK" : "NEEDS LOGIN";
+        output(`  [${state}] ${label}${r.message ? ` — ${r.message}` : ""}`);
+      }
+    }
+    process.exit(allAuthed ? 0 : 2);
+  }
+
+  const config = await loadConfig();
+  if (config.profiles.length === 0) {
+    if (jsonFlag) {
+      outputJson({
+        version: VERSION,
+        authenticated: false,
+        errorCode: "NO_PROFILE",
+        message: "No profile saved. Run: helmet login",
+        checkedAt,
+      });
+    } else {
+      console.error("No profile saved. Run: helmet login");
+    }
+    process.exit(2);
+  }
+
+  const profile = await resolveProfileOrExit(config, parsed.profile);
+  const row = await probeProfileAuth(profile);
+
+  if (jsonFlag) {
+    outputJson({
+      version: VERSION,
+      profile: row.profile,
+      authenticated: row.authenticated,
+      ...(row.authenticated ? {} : { errorCode: row.errorCode, message: row.message }),
+      checkedAt,
+    });
+  } else {
+    const state = row.authenticated ? "OK" : "NEEDS LOGIN";
+    output(`  [${state}] ${row.profile.displayName ?? row.profile.id}${row.message ? ` — ${row.message}` : ""}`);
+  }
+  process.exit(row.authenticated ? 0 : 2);
+}
+
+async function probeProfileAuth(profile: StoredProfile): Promise<{
+  profile: { id: string; displayName: string | null };
+  ok: boolean;
+  authenticated: boolean;
+  errorCode?: string;
+  message?: string;
+}> {
+  const base = {
+    profile: { id: profile.id, displayName: profile.displayName ?? null },
+  };
+  try {
+    const { client, persist } = await authenticateProfile(profile);
+    const result = await client.status.check();
+    if (result.authenticated) {
+      await persist();
+      return { ...base, ok: true, authenticated: true };
+    }
+    await clearSessionCache(profile.id);
+    return {
+      ...base,
+      ok: false,
+      authenticated: false,
+      errorCode: "AUTH_REQUIRED",
+      message: result.message,
+    };
+  } catch (err) {
+    if (err instanceof AuthenticationError) {
+      await clearSessionCache(profile.id);
+      return {
+        ...base,
+        ok: false,
+        authenticated: false,
+        errorCode: "AUTH_REQUIRED",
+        message: err.message,
+      };
+    }
+    return {
+      ...base,
+      ok: false,
+      authenticated: false,
+      errorCode: "ERROR",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 async function handleProfiles(
@@ -859,6 +995,7 @@ interface FanOutRow<T> {
   ok: boolean;
   data?: T;
   error?: string;
+  errorCode?: string;
 }
 
 async function runSelectedOrFanOut<T>(
@@ -907,6 +1044,10 @@ async function runSelectedOrFanOut<T>(
       });
     } catch (err) {
       const msg = errorMessage(err);
+      const errorCode = err instanceof AuthenticationError ? "AUTH_REQUIRED" : undefined;
+      if (err instanceof AuthenticationError) {
+        await clearSessionCache(profile.id).catch(() => {});
+      }
       rows.push({
         profile: {
           id: profile.id,
@@ -915,6 +1056,7 @@ async function runSelectedOrFanOut<T>(
         },
         ok: false,
         error: msg,
+        ...(errorCode ? { errorCode } : {}),
       });
       if (!jsonFlag) {
         console.error(`[${profileLabel(profile)}] ${msg}`);
@@ -932,7 +1074,9 @@ async function runSelectedOrFanOut<T>(
         displayName: r.profile.displayName,
       },
       ok: r.ok,
-      ...(r.ok ? { data: r.data } : { error: r.error }),
+      ...(r.ok
+        ? { data: r.data }
+        : { error: r.error, ...(r.errorCode ? { errorCode: r.errorCode } : {}) }),
     }));
     outputJson(redacted);
   } else {
@@ -982,6 +1126,7 @@ function printUsage(): void {
     fines [--json]               List fines and total
     search <query> [--json]      Search the catalog (unauthenticated)
     summary [--json]             Account summary
+    status [--json] [--all-profiles]  Preflight auth check (exit 0 if OK, 2 if needs login)
     profiles list [--json]       List saved profiles
     profiles remove <selector>   Remove a saved profile
     profiles rename <selector> <name>  Rename a profile's display name
@@ -1000,7 +1145,31 @@ function printUsage(): void {
 `);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
+  if (err instanceof AuthenticationError) {
+    const config = await loadConfig().catch(() => null);
+    const activeId = parsed.profile
+      ? config?.profiles.find((p) =>
+          p.id === parsed.profile || p.cardNumber === parsed.profile || p.displayName === parsed.profile,
+        )?.id ?? null
+      : config?.lastProfileId ?? config?.profiles[0]?.id ?? null;
+    if (activeId) {
+      await clearSessionCache(activeId).catch(() => {});
+    }
+    if (jsonFlag) {
+      outputJson({
+        ok: false,
+        errorCode: "AUTH_REQUIRED",
+        errorName: "AuthenticationError",
+        message: err.message,
+        recovery: "Run `helmet login` to refresh your library credentials.",
+      });
+    } else {
+      console.error(`\n✗ ${err.message}\n`);
+      console.error("  → Run `helmet login` to refresh your credentials.\n");
+    }
+    process.exit(2);
+  }
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });

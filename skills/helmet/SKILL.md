@@ -1,6 +1,6 @@
 ---
 name: helmet
-version: 0.1.1
+version: 0.2.0
 description: Access the Helmet public-library network (Helsinki Metropolitan Area — Helsinki, Espoo, Vantaa, Kauniainen — on helmet.finna.fi, built on Finna/VuFind) from AI agents. Check loans and due dates, renew books, place or cancel holds (reservations), view fines, and search the catalog — for one library card or many family accounts in a single call. Uses the patron's card number + PIN; session cookies are cached between CLI invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` for a whole family.
 metadata:
   openclaw:
@@ -52,6 +52,15 @@ helmet summary --json
 # Family overview (all saved profiles)
 helmet summary --all-profiles --json
 ```
+
+### Preflight (recommended before bulk queries)
+
+```bash
+helmet status --json
+helmet status --all-profiles --json
+```
+
+Verifies each saved profile's session is live. Exit code `0` means authenticated; `2` means the user needs to run `helmet login`. Run this once at the start of a multi-step task to avoid partial failures halfway through.
 
 ## Profiles
 
@@ -134,9 +143,47 @@ List individual fines and total amount owed.
 
 Search the Helmet catalog. Unauthenticated — `--profile` has no effect and `--all-profiles` is rejected.
 
+### `helmet status [--json] [--all-profiles]`
+
+Lightweight preflight: reports whether the selected profile (or all profiles) has a live authenticated session. Exit code `0` if authenticated, `2` if `helmet login` is needed. With `--json`:
+
+```json
+{
+  "version": "0.2.0",
+  "profile": {"id": "helmet|...", "displayName": "Alice"},
+  "authenticated": true,
+  "checkedAt": "2026-04-14T12:34:56Z"
+}
+```
+
+On `--all-profiles`, emits `{version, checkedAt, profiles: [...]}` where each row carries `authenticated: bool` and, on failure, `errorCode: "AUTH_REQUIRED"`. Run this before multi-step tasks.
+
 ### `helmet version` / `helmet --version` / `helmet -V`
 
-Print the CLI version (e.g. `0.1.1`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
+Print the CLI version (e.g. `0.2.0`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
+
+## Handling authentication errors
+
+When the stored session expires, the PIN has changed, or Finna invalidates the session for any reason, `helmet` exits with **code 2** and (with `--json`) emits:
+
+```json
+{
+  "ok": false,
+  "errorCode": "AUTH_REQUIRED",
+  "errorName": "AuthenticationError",
+  "message": "Helmet session expired and re-authentication failed — run `helmet login` to refresh credentials.",
+  "recovery": "Run `helmet login` to refresh your library credentials."
+}
+```
+
+On `--all-profiles`, one row may fail with `errorCode: "AUTH_REQUIRED"` while others succeed. Report the affected person by `displayName` and continue with the rest.
+
+### Agent recovery procedure
+
+1. **Detect** — check the exit code (2 = auth) or the `errorCode: "AUTH_REQUIRED"` field in the JSON output.
+2. **Report** — tell the user which profile(s) need re-authentication, referring to them by `displayName` (not card number).
+3. **Do NOT run `helmet login` yourself.** It is interactive and prompts for a PIN that only the user knows. Ask the user to run `helmet login` locally.
+4. **Retry** the original command after the user confirms they've re-logged in. The CLI's stale session cache is cleared automatically when auth fails, so the retry will attempt a fresh login.
 
 ## Triage Guidance
 
@@ -174,3 +221,14 @@ The wrapper script at `scripts/helmet-cli.sh` can be used as a fallback when the
 ```bash
 bash skills/helmet/scripts/helmet-cli.sh summary --all-profiles --json
 ```
+
+## Troubleshooting
+
+**Empty `holds` / `loans` / `fines` arrays with no error** — this was a bug in **helmet ≤ 0.1.1** where an expired session was parsed as "no data" instead of raising an auth error. Upgrade to 0.2.0+:
+
+```bash
+npm install -g @helmet-ai/helmet@latest
+helmet --version   # must be ≥ 0.2.0
+```
+
+If you still see empty results after upgrading, run `helmet status --json` — if it reports `authenticated: false`, the user needs to run `helmet login`. Real empty results (no holds, no loans) after 0.2.0 are legitimate; only pre-0.2.0 masked auth failures as empty.

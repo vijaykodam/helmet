@@ -10,6 +10,7 @@ export {
   parseHoldActionResult,
   HoldFormUnavailableError,
 } from "./parsers/holds.js";
+export { isUnauthenticatedPageHtml } from "./parsers/auth-detect.js";
 export { parseFines } from "./parsers/fines.js";
 export type {
   HelmetProfile,

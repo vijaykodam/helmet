@@ -30,20 +30,8 @@ export class HoldFormUnavailableError extends Error {
 const HOLD_SESSION_EXPIRED_MESSAGE =
   "Session expired — Finna served a login page instead of hold details.";
 
-export function isUnauthenticatedHoldHtml(html: string): boolean {
-  const $ = cheerio.load(html);
-  const normalized = html.toLowerCase();
-
-  if (
-    normalized.includes("/myresearch/completelogin")
-    || normalized.includes("login-link")
-    || normalized.includes("processlogin")
-  ) {
-    return true;
-  }
-
-  return $("form#loginForm, form[name='processLogin']").length > 0;
-}
+export { isUnauthenticatedPageHtml as isUnauthenticatedHoldHtml } from "./auth-detect.js";
+import { isUnauthenticatedPageHtml } from "./auth-detect.js";
 
 /**
  * Parse the /MyResearch/Holds page HTML into structured Hold objects.
@@ -196,7 +184,7 @@ export function extractHoldLinks(html: string): HoldLink[] {
 export function extractHoldPlaceForm(html: string): HoldPlaceForm {
   const $ = cheerio.load(html);
 
-  if (isUnauthenticatedHoldHtml(html)) {
+  if (isUnauthenticatedPageHtml(html)) {
     throw new HoldFormUnavailableError(HOLD_SESSION_EXPIRED_MESSAGE);
   }
 
@@ -250,7 +238,7 @@ const HOLD_SUCCESS_MARKERS = [
 ];
 
 export function parseHoldActionResult(html: string): HoldActionResult {
-  if (isUnauthenticatedHoldHtml(html)) {
+  if (isUnauthenticatedPageHtml(html)) {
     return { success: false, message: HOLD_SESSION_EXPIRED_MESSAGE };
   }
 

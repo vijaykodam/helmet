@@ -12,3 +12,4 @@ PLAN-*.md
 .remember/
 .changeset/README.md
 session-report-*
+test/fixtures/*.html

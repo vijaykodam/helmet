@@ -1,4 +1,4 @@
-import { HelmetSession, type SessionState } from "./session.js";
+import { HelmetSession, AuthenticationError, type SessionState } from "./session.js";
 import type {
   HelmetProfile,
   Loan,
@@ -19,7 +19,9 @@ import {
   isUnauthenticatedHoldHtml,
   parseHoldActionResult,
 } from "./parsers/holds.js";
+import { isUnauthenticatedPageHtml } from "./parsers/auth-detect.js";
 import { parseFines } from "./parsers/fines.js";
+import type { RequestInit } from "undici";
 
 const FINNA_API = "https://api.finna.fi";
 
@@ -54,17 +56,47 @@ export class HelmetClient {
     return this.session.exportState();
   }
 
+  /**
+   * Fetch an authenticated Finna page and guard against the soft-expiry case
+   * where Finna returns HTTP 200 with a login page instead of the requested
+   * data. On detection, attempt one transparent re-auth using stored credentials.
+   * If that also returns a login page (or no credentials are stored), throw
+   * AuthenticationError so callers can surface a clean error instead of
+   * parsing an empty page as "no data".
+   */
+  private async authedFetch(
+    path: string,
+    init?: RequestInit,
+  ): Promise<string> {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const doFetch = async () => {
+      const resp = method === "POST"
+        ? await this.session.post(path, init)
+        : await this.session.get(path, init);
+      return resp.text();
+    };
+
+    let html = await doFetch();
+    if (!isUnauthenticatedPageHtml(html)) return html;
+
+    if (await this.session.tryReauth()) {
+      html = await doFetch();
+      if (!isUnauthenticatedPageHtml(html)) return html;
+    }
+
+    throw new AuthenticationError(
+      "Helmet session expired and re-authentication failed — run `helmet login` to refresh credentials.",
+    );
+  }
+
   loans = {
     list: async (): Promise<Loan[]> => {
-      const resp = await this.session.get("/MyResearch/CheckedOut");
-      const html = await resp.text();
+      const html = await this.authedFetch("/MyResearch/CheckedOut");
       return parseLoans(html);
     },
 
     renew: async (itemId: string): Promise<RenewalResult[]> => {
-      // First get the page to extract CSRF token
-      const pageResp = await this.session.get("/MyResearch/CheckedOut");
-      const pageHtml = await pageResp.text();
+      const pageHtml = await this.authedFetch("/MyResearch/CheckedOut");
       const csrf = extractRenewalCsrf(pageHtml);
 
       const formData = new URLSearchParams();
@@ -74,20 +106,16 @@ export class HelmetClient {
       formData.append("renewSelectedIDS[]", itemId);
       formData.set("renewSelected", "1");
 
-      const resp = await this.session.post("/MyResearch/CheckedOut", {
+      const html = await this.authedFetch("/MyResearch/CheckedOut", {
+        method: "POST",
         body: formData.toString(),
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
-      const html = await resp.text();
       return parseRenewalResults(html, [itemId]);
     },
 
     renewAll: async (): Promise<RenewalResult[]> => {
-      // Get page for CSRF + all renewable IDs
-      const pageResp = await this.session.get("/MyResearch/CheckedOut");
-      const pageHtml = await pageResp.text();
+      const pageHtml = await this.authedFetch("/MyResearch/CheckedOut");
       const csrf = extractRenewalCsrf(pageHtml);
       const loans = parseLoans(pageHtml);
       const renewableIds = loans.filter((l) => l.renewable).map((l) => l.id);
@@ -101,21 +129,18 @@ export class HelmetClient {
       }
       formData.set("renewAll", "1");
 
-      const resp = await this.session.post("/MyResearch/CheckedOut", {
+      const html = await this.authedFetch("/MyResearch/CheckedOut", {
+        method: "POST",
         body: formData.toString(),
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
-      const html = await resp.text();
       return parseRenewalResults(html, renewableIds);
     },
   };
 
   holds = {
     list: async (): Promise<Hold[]> => {
-      const resp = await this.session.get("/MyResearch/Holds");
-      const html = await resp.text();
+      const html = await this.authedFetch("/MyResearch/Holds");
       return parseHolds(html);
     },
 
@@ -250,9 +275,22 @@ export class HelmetClient {
 
   fines = {
     list: async (): Promise<{ fines: Fine[]; total: number }> => {
-      const resp = await this.session.get("/MyResearch/Fines");
-      const html = await resp.text();
+      const html = await this.authedFetch("/MyResearch/Fines");
       return parseFines(html);
+    },
+  };
+
+  status = {
+    check: async (): Promise<{ authenticated: true } | { authenticated: false; message: string }> => {
+      try {
+        await this.authedFetch("/MyResearch/CheckedOut");
+        return { authenticated: true };
+      } catch (err) {
+        if (err instanceof AuthenticationError) {
+          return { authenticated: false, message: err.message };
+        }
+        throw err;
+      }
     },
   };
 
