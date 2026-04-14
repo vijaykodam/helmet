@@ -85,11 +85,11 @@ The CLI stores one or more library accounts as *profiles*. Use these when acting
 ```json
 [
   {"profile": {"id": "helmet|...", "displayName": "Alice"}, "ok": true,  "data": { /* same shape as single-profile --json */ }},
-  {"profile": {"id": "helmet|...", "displayName": "Bob"},   "ok": false, "error": "AuthenticationError: ..."}
+  {"profile": {"id": "helmet|...", "displayName": "Bob"},   "ok": false, "error": "AuthenticationError: ...", "errorCode": "AUTH_REQUIRED"}
 ]
 ```
 
-Exit code is `0` if at least one profile succeeded, `1` if all failed.
+Exit code is `0` if at least one profile succeeded, `1` if all failed. When reporting partial failures to the user, key on `errorCode` (stable) rather than the free-form `error` string (which embeds the raw exception message).
 
 ### `helmet profiles list --json`
 
@@ -184,6 +184,7 @@ On `--all-profiles`, one row may fail with `errorCode: "AUTH_REQUIRED"` while ot
 2. **Report** — tell the user which profile(s) need re-authentication, referring to them by `displayName` (not card number).
 3. **Do NOT run `helmet login` yourself.** It is interactive and prompts for a PIN that only the user knows. Ask the user to run `helmet login` locally.
 4. **Retry** the original command after the user confirms they've re-logged in. The CLI's stale session cache is cleared automatically when auth fails, so the retry will attempt a fresh login.
+5. **Do NOT loop.** If the retry still returns `AUTH_REQUIRED`, stop and ask the user — do not keep retrying. The most likely cause is a changed PIN that the stored credential no longer matches, which only a fresh `helmet login` can fix.
 
 ## Triage Guidance
 
