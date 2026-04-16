@@ -42,10 +42,12 @@ import { isUnauthenticatedPageHtml } from "./auth-detect.js";
  *   - .holds-status-information div with metadata
  *
  * Unlike loans (which use <strong>Label: Value</strong> in one element),
- * holds use <strong>Label:</strong> Value as sibling text nodes.
+ * holds use <strong>Label:</strong> Value as sibling text nodes — except for
+ * the pickup deadline, which Finna renders as free text inside .alert-success
+ * ("Noudettavissa - nouto viimeistään DD.MM.YYYY") and requires a regex.
  *
  * Finnish labels: Noutopaikka (pickup location), Sijainti jonossa (queue position),
- * Luotu (created date), Viimeinen noutopäivä (last pickup date).
+ * Luotu (created date), Varaushylly (shelf location inside the success alert).
  */
 export function parseHolds(html: string): Hold[] {
   const $ = cheerio.load(html);
@@ -92,16 +94,26 @@ export function parseHolds(html: string): Hold[] {
       null;
     const queuePosition = queueText ? parseInt(queueText, 10) : null;
 
-    // Expiration date: "Viimeinen noutopäivä" / "Sista avhämtningsdag" / "Last pickup date"
-    // or created date: "Luotu" / "Skapad" / "Created"
-    const expirationDate =
-      strongTexts["viimeinen noutopäivä"] ??
-      strongTexts["sista avhämtningsdag"] ??
-      strongTexts["last pickup date"] ??
+    // Created date: "Luotu" / "Skapad" / "Created" (rendered as <strong>Luotu:</strong> DD.MM.YYYY)
+    const createdDate =
       strongTexts["luotu"] ??
       strongTexts["skapad"] ??
       strongTexts["created"] ??
       null;
+
+    // Shelf location: "Varaushylly" / "Reserveringshylla" / "Hold shelf" (inside .alert-success)
+    const shelfLocation =
+      strongTexts["varaushylly"] ??
+      strongTexts["reserveringshylla"] ??
+      strongTexts["hold shelf"] ??
+      null;
+
+    // Pickup deadline appears as free text inside .alert-success, not wrapped in <strong>:
+    //   "Noudettavissa - nouto viimeistään 15.1.2026"
+    const alertText = row.find(".alert-success").text().replace(/\s+/g, " ").trim();
+    const deadlinePattern =
+      /(?:nouto\s+viimeist[äa]än|sista\s+avh[äa]mtningsdag|pickup\s+by)\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})/i;
+    const pickupDeadline = alertText.match(deadlinePattern)?.[1] ?? null;
 
     // Status from alert classes and text content
     const status = deriveHoldStatus($, row);
@@ -116,7 +128,9 @@ export function parseHolds(html: string): Hold[] {
         author,
         pickupLocation,
         queuePosition: isNaN(queuePosition ?? NaN) ? null : queuePosition,
-        expirationDate,
+        pickupDeadline,
+        createdDate,
+        shelfLocation,
         status,
         cancelable,
         fetchedAt: now,
@@ -144,10 +158,15 @@ function deriveHoldStatus(
   }
 
   // In transit
+  // Finnish: "Matkalla noutopaikkaan" (on the way to pickup) renders in
+  // .text-success (not .alert-success) — the "matkalla" keyword is the
+  // reliable marker. "Kuljetuksessa" is an older Finna wording kept for safety.
   if (
+    rowText.includes("matkalla") ||
     rowText.includes("kuljetuksessa") ||
     rowText.includes("in transit") ||
-    rowText.includes("under transport")
+    rowText.includes("under transport") ||
+    rowText.includes("på väg")
   ) {
     return "in_transit";
   }

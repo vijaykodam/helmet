@@ -34,7 +34,9 @@ export interface Hold {
   author: string | null;
   pickupLocation: string | null;
   queuePosition: number | null;
-  expirationDate: string | null;
+  pickupDeadline: string | null;
+  createdDate: string | null;
+  shelfLocation: string | null;
   status: "in_transit" | "available_for_pickup" | "pending" | "unknown";
   cancelable: boolean;
   fetchedAt: Date;

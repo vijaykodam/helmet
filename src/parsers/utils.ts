@@ -31,8 +31,8 @@ export function extractStrongValues(
 /**
  * Extract <strong>Label:</strong> Value pairs where the value is a sibling text node.
  * This is used on the holds page where Finna renders:
- *   <strong>Noutopaikka:</strong> Viherlaakso / Gröndal
- *   <strong>Luotu:</strong> 11.4.2026
+ *   <strong>Noutopaikka:</strong> Sample Branch
+ *   <strong>Luotu:</strong> 1.1.2026
  *
  * Also picks up inline values (same-element) as a fallback.
  * Returns a map of lowercase label → value.

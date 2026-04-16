@@ -339,7 +339,9 @@ async function handleHolds(
           if (h.author) output(`    Author: ${h.author}`);
           if (h.queuePosition != null) output(`    Queue position: ${h.queuePosition}`);
           if (h.pickupLocation) output(`    Pickup: ${h.pickupLocation}`);
-          if (h.expirationDate) output(`    Expires: ${h.expirationDate}`);
+          if (h.shelfLocation) output(`    Shelf: ${h.shelfLocation}`);
+          if (h.pickupDeadline) output(`    Pickup by: ${h.pickupDeadline}`);
+          if (h.createdDate) output(`    Created: ${h.createdDate}`);
           output("");
         }
       }

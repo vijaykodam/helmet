@@ -1,6 +1,6 @@
 ---
 name: helmet
-version: 0.2.0
+version: 0.3.0
 description: Access the Helmet public-library network (Helsinki Metropolitan Area — Helsinki, Espoo, Vantaa, Kauniainen — on helmet.finna.fi, built on Finna/VuFind) from AI agents. Check loans and due dates, renew books, place or cancel holds (reservations), view fines, and search the catalog — for one library card or many family accounts in a single call. Uses the patron's card number + PIN; session cookies are cached between CLI invocations so warm calls skip the login handshake. Start with `helmet summary --json` for one account, or `helmet summary --all-profiles --json` for a whole family.
 metadata:
   openclaw:
@@ -125,7 +125,30 @@ Renew every renewable item on one profile. Same profile-targeting rule as above 
 
 ### `helmet holds list --json`
 
-List current holds (status: `pending`, `in_transit`, `available_for_pickup`), queue position, pickup location, expiration date. `helmet holds` (no subcommand) is an alias.
+List current holds. `helmet holds` (no subcommand) is an alias. Each row has shape:
+
+```json
+{
+  "id": "12345678",
+  "title": "Sample Book Title",
+  "author": "Last, First",
+  "pickupLocation": "Sample Branch",
+  "queuePosition": null,
+  "pickupDeadline": "15.1.2026",
+  "createdDate": "1.1.2026",
+  "shelfLocation": "A 000",
+  "status": "available_for_pickup",
+  "cancelable": true,
+  "fetchedAt": "2026-01-01T12:00:00.000Z"
+}
+```
+
+Field meanings:
+- `status`: `"pending"` (in queue) / `"in_transit"` (on its way to the pickup branch) / `"available_for_pickup"` (arrived — the user must go collect it).
+- `pickupDeadline` (Finnish "nouto viimeistään"): the date the hold will be cancelled and passed to the next patron if uncollected. **Only populated when `status === "available_for_pickup"`** — `null` otherwise. Date is in Finnish format `D.M.YYYY`. **If the user misses this date, Helmet charges a no-pickup fee and may suspend borrowing for a period** — agents should surface this date prominently in reminders.
+- `shelfLocation` (Finnish "Varaushylly"): the exact shelf code inside the branch where the arrived hold is waiting (e.g. `A 000`). Only populated for arrived holds. Include it in pickup reminders so the user can walk straight to the shelf.
+- `createdDate` (Finnish "Luotu"): when the hold was placed. Informational, not actionable.
+- `queuePosition`: for pending holds, the user's position in the reservation queue (`null` once the hold is in transit or arrived).
 
 ### `helmet holds place <record-id> [--comment <text>] --json`
 
@@ -149,7 +172,7 @@ Lightweight preflight: reports whether the selected profile (or all profiles) ha
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "profile": {"id": "helmet|...", "displayName": "Alice"},
   "authenticated": true,
   "checkedAt": "2026-04-14T12:34:56Z"
@@ -160,7 +183,7 @@ On `--all-profiles`, emits `{version, checkedAt, profiles: [...]}` where each ro
 
 ### `helmet version` / `helmet --version` / `helmet -V`
 
-Print the CLI version (e.g. `0.2.0`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
+Print the CLI version (e.g. `0.3.0`). No auth, no network. Useful when an agent needs to record which helmet build produced a report.
 
 ## Handling authentication errors
 
@@ -194,10 +217,19 @@ When reporting to the user, prioritize items by actionability:
 |----------|-----------|--------|
 | URGENT | Overdue items (`dueStatus: "overdue"`) | Renew immediately or alert user |
 | URGENT | Fines > 0 EUR | Alert user — fines block borrowing |
+| URGENT | Ready-for-pickup hold whose `pickupDeadline` is today, tomorrow, or in the past | Alert user to collect **today** — missing the deadline cancels the hold and charges a no-pickup fee |
 | HIGH | Loans due within 3 days (`dueStatus: "due"` or in `loansDueSoon`) | Renew if possible, otherwise warn |
-| HIGH | Holds ready for pickup (`status: "available_for_pickup"`) | Alert user — pickup window is limited |
+| HIGH | Ready-for-pickup hold (`status: "available_for_pickup"`) with `pickupDeadline` within 7 days | Remind user to pick up. Always cite the exact deadline date and the `shelfLocation` so they can go straight to the shelf at `pickupLocation`. |
 | MEDIUM | Loans due within 7 days | Mention in summary |
 | LOW | Holds with queue position ≤ 2 | Mention — pickup may come soon |
+
+### Formatting hold reminders for users
+
+When surfacing a ready-for-pickup hold, prefer a line like:
+
+> *"Pick up **Sample Book Title** at **Sample Branch** (shelf **A 000**) by **15.1.2026** — otherwise the hold is cancelled and a no-pickup fee applies."*
+
+Always include: title, `pickupLocation`, `shelfLocation` (when present), and `pickupDeadline`. Dates are already in Finnish `D.M.YYYY` format — keep them as-is; do not reformat to ISO unless the user is clearly a developer consuming JSON.
 
 ### Recommended workflow (single person)
 

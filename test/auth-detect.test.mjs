@@ -30,7 +30,7 @@ const AUTHED_HOLDS_HTML = `<!DOCTYPE html>
     <tr class="myresearch-row">
       <td><h3 class="record-title"><a>Example Book Title</a></h3>
           <div class="holds-status-information">
-            <strong>Noutopaikka:</strong> Viherlaakso
+            <strong>Noutopaikka:</strong> Sample Branch
           </div>
       </td>
     </tr>
