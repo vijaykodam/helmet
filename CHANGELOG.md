@@ -1,5 +1,11 @@
 # @helmet-ai/helmet
 
+## 0.3.1
+
+### Patch Changes
+
+- docs(skill): tighten SKILL.md `description` for the clawhub listing card. Drops the four-city list and Finna/VuFind trivia that consumed the card preview budget before any action verb appeared; the full detail remains in the SKILL.md body. No behavior change.
+
 ## 0.3.0
 
 ### Minor Changes
