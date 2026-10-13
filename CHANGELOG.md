@@ -1,5 +1,11 @@
 # @helmet-ai/helmet
 
+## 0.3.2
+
+### Patch Changes
+
+- fix(auth): detect wrong card number or PIN on login. Finna renders the login form with `action` before `id`, so the old regex check never matched and a rejected login was treated as success. Each command then made a second failed login attempt and reported "session expired". The login check now uses a DOM query, shows Finna's own error text (for example "Tunnus/salasana ei täsmää"), and never re-logs in within 60 seconds of a login.
+
 ## 0.3.1
 
 ### Patch Changes

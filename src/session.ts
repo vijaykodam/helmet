@@ -1,5 +1,6 @@
 import { CookieJar, type Cookie } from "tough-cookie";
 import { fetch, type RequestInit, type Response } from "undici";
+import { detectLoginFailure, extractLoginError, extractLoginFormAction } from "./parsers/auth-detect.js";
 
 export interface SessionState {
   version: 1;
@@ -18,6 +19,11 @@ export class APIError extends Error {
   }
 }
 
+// An unverified login (200 response, no redirect) that is then rejected within
+// this window was most likely a failed login that went undetected. Do not
+// retry it: each retry is one more failed PIN attempt against the card.
+const REAUTH_COOLDOWN_MS = 60_000;
+
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36";
@@ -26,6 +32,7 @@ export class HelmetSession {
   private baseUrl: string;
   private cookieJar: CookieJar;
   private loggedIn = false;
+  private unverifiedLoginAt = 0;
   private cardNumber?: string;
   private pin?: string;
   private debug = false;
@@ -91,9 +98,7 @@ export class HelmetSession {
       ?? /value="([^"]+)"\s+name="auth_method"/.exec(loginHtml);
 
     // Extract form action URL (defaults to /MyResearch/Home)
-    const actionMatch = /id="loginForm"[^>]*action="([^"]+)"/.exec(loginHtml)
-      ?? /name="loginForm"[^>]*action="([^"]+)"/.exec(loginHtml);
-    const formAction = actionMatch?.[1] ?? "/MyResearch/Home";
+    const formAction = extractLoginFormAction(loginHtml) ?? "/MyResearch/Home";
 
     // Step 2: POST login credentials
     const formData = new URLSearchParams();
@@ -145,9 +150,7 @@ export class HelmetSession {
       if (redirectUrl.includes("UserLogin")) {
         // Follow redirect to get error message from flash
         const errorResp = await this.rawRequest(redirectUrl, { method: "GET" });
-        const errorHtml = await errorResp.text();
-        const errorMatch = /class="[^"]*alert-danger[^"]*"[^>]*>([\s\S]*?)<\/div/i.exec(errorHtml);
-        const errorMsg = errorMatch?.[1]?.replace(/<[^>]+>/g, "").trim();
+        const errorMsg = extractLoginError(await errorResp.text());
         throw new AuthenticationError(
           `Helmet login failed: ${errorMsg || "invalid credentials"}`,
         );
@@ -173,29 +176,40 @@ export class HelmetSession {
         throw new AuthenticationError("Helmet login failed: session not authenticated");
       }
 
-      this.loggedIn = true;
-      this.cardNumber = cardNumber;
-      this.pin = pin;
+      this.markLoggedIn(cardNumber, pin, true);
       return;
     }
 
-    // Non-redirect response (200) — check if it shows the login form as primary content
-    // Note: Finna embeds a login form in the navbar of every page, so we only check
-    // if the *main content* is the login form (id="loginForm" with action to Home)
-    const text = await resp.text();
-    const mainLoginForm = /id="loginForm"[^>]*action="[^"]*MyResearch\/Home/.test(text);
-    if (mainLoginForm && !text.includes("myresearch-menu")) {
-      const errorMatch = /class="[^"]*alert-danger[^"]*"[^>]*>([\s\S]*?)<\/div/i.exec(text);
-      const errorMsg = errorMatch?.[1]?.replace(/<[^>]+>/g, "").trim();
+    // Non-redirect response (200). Finna re-renders the login page on bad
+    // credentials, so a login page without the account menu means failure.
+    const errorMsg = detectLoginFailure(await resp.text());
+    if (errorMsg !== null) {
       throw new AuthenticationError(
         `Helmet login failed: ${errorMsg || "invalid credentials"}`,
       );
     }
 
-    // If the response doesn't look like a dedicated login page, assume success
+    this.markLoggedIn(cardNumber, pin, false);
+  }
+
+  /**
+   * `verified` is true when a follow-up request confirmed the session. Only an
+   * unverified login starts the re-auth cooldown (see REAUTH_COOLDOWN_MS).
+   */
+  private markLoggedIn(cardNumber: string, pin: string, verified: boolean): void {
     this.loggedIn = true;
+    this.unverifiedLoginAt = verified ? 0 : Date.now();
     this.cardNumber = cardNumber;
     this.pin = pin;
+  }
+
+  /** Throw instead of re-authenticating right after an unverified login that did not hold. */
+  private assertReauthAllowed(): void {
+    if (this.unverifiedLoginAt && Date.now() - this.unverifiedLoginAt < REAUTH_COOLDOWN_MS) {
+      throw new AuthenticationError(
+        "Helmet login failed: credentials were not accepted (check card number and PIN)",
+      );
+    }
   }
 
   async request(path: string, init?: RequestInit): Promise<Response> {
@@ -216,6 +230,7 @@ export class HelmetSession {
       if (this.debug) {
         console.log(`[helmet] Session expired, re-authenticating...`);
       }
+      this.assertReauthAllowed();
       this.loggedIn = false;
       await this.login(this.cardNumber, this.pin);
       resp = await this.rawRequest(path, init);
@@ -244,9 +259,14 @@ export class HelmetSession {
    * Re-authenticate using stored credentials. Returns true on success, false if
    * no credentials are available (e.g. session was restored without a PIN).
    * Call this when a page returns 200 but with unauthenticated content.
+   *
+   * Throws AuthenticationError if the login fails, or if an unverified login
+   * happened less than REAUTH_COOLDOWN_MS ago (the credentials were most
+   * likely rejected, and a retry would cost one more failed PIN attempt).
    */
   async tryReauth(): Promise<boolean> {
     if (!this.cardNumber || !this.pin) return false;
+    this.assertReauthAllowed();
     if (this.debug) {
       console.log("[helmet] Session expired (soft-expiry detected), re-authenticating...");
     }

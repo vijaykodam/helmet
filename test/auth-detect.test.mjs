@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { isUnauthenticatedPageHtml } from "../dist/parsers/auth-detect.js";
+import {
+  isUnauthenticatedPageHtml,
+  detectLoginFailure,
+  extractLoginError,
+  extractLoginFormAction,
+} from "../dist/parsers/auth-detect.js";
+import { HelmetSession, AuthenticationError } from "../dist/session.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,10 +70,10 @@ let failed = 0;
 function check(label, actual, expected) {
   try {
     assert.equal(actual, expected);
-    console.log(`  ✓ ${label}`);
+    console.log(`  ok   ${label}`);
   } catch (err) {
     failed++;
-    console.error(`  ✗ ${label}: expected ${expected}, got ${actual}`);
+    console.error(`  FAIL ${label}: expected ${expected}, got ${actual}`);
   }
 }
 
@@ -78,6 +84,57 @@ check("login page (English)", isUnauthenticatedPageHtml(LOGIN_PAGE_EN), true);
 check("authed holds page", isUnauthenticatedPageHtml(AUTHED_HOLDS_HTML), false);
 check("authed loans page", isUnauthenticatedPageHtml(AUTHED_LOANS_HTML), false);
 check("authed empty fines page", isUnauthenticatedPageHtml(AUTHED_EMPTY_FINES_HTML), false);
+
+// Bad-PIN response: Finna re-renders the login page (200) with a flash
+// message. Live markup puts `action` before `id`, which broke the old
+// regex check and let wrong PINs pass as a successful login (0.3.1).
+const LOGIN_FAILED_HTML = LOGIN_PAGE_HTML.replace(
+  "<body>",
+  '<body><div role="alert" class="flash-message alert alert-danger">Virheelliset\n  tunnukset</div>',
+);
+const LOGIN_FORM_ID_FIRST = `<html><body>
+  <form id="loginForm" name="loginForm" action="/Custom/Login" method="post"></form>
+</body></html>`;
+
+console.log("\ndetectLoginFailure:");
+check("bad PIN page returns flash text", detectLoginFailure(LOGIN_FAILED_HTML), "Virheelliset tunnukset");
+check("login page without flash returns empty string", detectLoginFailure(LOGIN_PAGE_HTML), "");
+check("authed page returns null", detectLoginFailure(AUTHED_LOANS_HTML), null);
+
+console.log("\nextractLoginError:");
+check("nested markup in alert", extractLoginError('<div class="alert alert-danger"><div><b>Tunnus/salasana</b> ei täsmää</div></div>'), "Tunnus/salasana ei täsmää");
+check("no alert returns empty string", extractLoginError(LOGIN_PAGE_HTML), "");
+
+console.log("\nextractLoginFormAction:");
+check("action before id (live order)", extractLoginFormAction(LOGIN_PAGE_HTML), "/MyResearch/Home");
+check("id before action", extractLoginFormAction(LOGIN_FORM_ID_FIRST), "/Custom/Login");
+check("no login form", extractLoginFormAction(AUTHED_LOANS_HTML), null);
+
+console.log("\nHelmetSession re-auth cooldown:");
+{
+  const fresh = new HelmetSession("https://example.invalid");
+  fresh["markLoggedIn"]("123", "0000", false);
+  let err = null;
+  try {
+    await fresh.tryReauth();
+  } catch (e) {
+    err = e;
+  }
+  check("no re-login right after a fresh login", err instanceof AuthenticationError, true);
+  check("error names the credentials", /card number and PIN/.test(err?.message ?? ""), true);
+
+  // A verified login does not start the cooldown, so tryReauth goes on to
+  // login(), which fails on the network (example.invalid), not on the cooldown.
+  const verified = new HelmetSession("https://example.invalid");
+  verified["markLoggedIn"]("123", "0000", true);
+  let err2 = null;
+  try {
+    await verified.tryReauth();
+  } catch (e) {
+    err2 = e;
+  }
+  check("verified login allows re-login", err2 !== null && !(err2 instanceof AuthenticationError), true);
+}
 
 // If real captured fixtures are present locally (gitignored), also validate against them.
 const localFixtures = [
@@ -90,7 +147,20 @@ for (const [label, file, expected] of localFixtures) {
   if (existsSync(path)) {
     const html = readFileSync(path, "utf8");
     check(label + " (local fixture)", isUnauthenticatedPageHtml(html), expected);
+    check(
+      label + " login-failure detection (local fixture)",
+      detectLoginFailure(html) !== null,
+      expected,
+    );
   }
+}
+const realLogin = join(__dirname, "fixtures", "login-page.html");
+if (existsSync(realLogin)) {
+  check(
+    "real login-page form action (local fixture)",
+    extractLoginFormAction(readFileSync(realLogin, "utf8")),
+    "/MyResearch/Home",
+  );
 }
 
 if (failed > 0) {

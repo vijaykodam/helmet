@@ -1,6 +1,6 @@
 ---
 name: helmet
-version: 0.3.1
+version: 0.3.2
 description: Manage your Helmet library accounts (Helsinki capital region) from an AI agent — renew loans, place and cancel holds, view fines, and search the catalog across one card or a whole family at once.
 metadata:
   openclaw:

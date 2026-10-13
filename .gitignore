@@ -10,6 +10,7 @@ PLAN-*.md
 .playwright-mcp/
 .playwright-cli/
 .remember/
+scripts/
 .changeset/README.md
 session-report-*
 test/fixtures/*.html
