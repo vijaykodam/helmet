@@ -1137,7 +1137,7 @@ function printUsage(): void {
 
   Profile options:
     --profile <selector>  Target one profile (id, card, or display name)
-    --all-profiles        Fan out across all saved profiles (summary, loans list)
+    --all-profiles        Fan out across all saved profiles (summary, loans list, status)
 
   Other options:
     --json    Output as JSON (for agents)
