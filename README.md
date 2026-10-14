@@ -1,4 +1,4 @@
-# Helmet CLI
+# OpenClaw Skill for Finland's Helmet library + CLI
 
 A command-line interface for **Finland's Helmet library system** (Helsinki Metropolitan Area libraries). Check loans, renew books, view holds and fines, from your terminal or via AI agents.
 
